@@ -192,6 +192,26 @@ func TestEntrypointInstallsExtraCACertificate(t *testing.T) {
 	}
 }
 
+func TestEntrypointKeepsClaudeCodeCurrent(t *testing.T) {
+	content := readBuildFile(t, "opencode-manager-entrypoint")
+	for _, want := range []string{
+		`"$HOME/.local/bin/claude" update`,
+		"claude install",
+		"update_claude >/tmp/opencode-manager-claude-update.log 2>&1 &",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("entrypoint missing Claude Code update step %q:\n%s", want, content)
+		}
+	}
+	// The update runs in the background, before the supervisors start, so it can
+	// never delay or fail the OpenCode server.
+	update := strings.Index(content, "update_claude >/tmp/")
+	supervisor := strings.Index(content, "serve_opencode &")
+	if update == -1 || supervisor == -1 || update > supervisor {
+		t.Fatalf("expected the background Claude Code update before the supervisors start:\n%s", content)
+	}
+}
+
 func TestEntrypointStartsDSHWebAndStoresToken(t *testing.T) {
 	content := readBuildFile(t, "opencode-manager-entrypoint")
 	for _, want := range []string{
