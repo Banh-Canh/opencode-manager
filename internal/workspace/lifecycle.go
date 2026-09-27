@@ -154,6 +154,7 @@ func (l Lifecycle) Statuses(ctx context.Context, workspaces []Summary) []Status 
 			ws.Manifest.HomeDir,
 			containerStatus == runtime.StatusRunning,
 			ws.Manifest.RuntimeEnabled(agent.DeepSeek),
+			ws.Manifest.RuntimeEnabled(agent.Claude),
 		)
 		statuses = append(statuses, status)
 	}
