@@ -750,3 +750,82 @@ func TestVersionIsNewer(t *testing.T) {
 		}
 	}
 }
+
+func TestRecreateRefusedWhileAgentIsWorking(t *testing.T) {
+	alpha := workspace.Summary{Manifest: workspace.Manifest{Name: "alpha"}}
+	m := model{
+		workspaces: []workspace.Summary{alpha},
+		statuses:   map[string]workspace.Status{"alpha": {Container: runtime.StatusRunning, Activity: workspace.ActivityWorking}},
+	}
+	updated, cmd := m.executeShortcut("r")
+	next := updated.(model)
+	if cmd != nil || next.recreating["alpha"] {
+		t.Fatal("recreate should be refused while the agent is working")
+	}
+	if !strings.Contains(next.message, "Cannot recreate alpha") {
+		t.Fatalf("message = %q", next.message)
+	}
+}
+
+func TestRecreateMarksWorkspaceUntilDone(t *testing.T) {
+	alpha := workspace.Summary{Manifest: workspace.Manifest{Name: "alpha"}}
+	m := model{
+		workspaces: []workspace.Summary{alpha},
+		statuses:   map[string]workspace.Status{"alpha": {Container: runtime.StatusExited}},
+	}
+	updated, cmd := m.executeShortcut("r")
+	next := updated.(model)
+	if cmd == nil || !next.recreating["alpha"] {
+		t.Fatal("recreate should start for an idle workspace")
+	}
+	if got, _ := next.workspaceStatus(alpha); got != "recreating" {
+		t.Fatalf("status while recreating = %q, want recreating", got)
+	}
+
+	updated, _ = next.Update(lifecycleActionMsg{action: "Recreate", name: "alpha"})
+	if updated.(model).recreating["alpha"] {
+		t.Fatal("recreating flag should clear once the action completes")
+	}
+}
+
+func TestRecreateLockSurvivesOtherLifecycleCompletions(t *testing.T) {
+	for _, action := range []string{"Start", "Stop", "Delete"} {
+		t.Run(action, func(t *testing.T) {
+			m := model{
+				workspaces: []workspace.Summary{{Manifest: workspace.Manifest{Name: "alpha"}}},
+				recreating: map[string]bool{"alpha": true},
+			}
+			updated, _ := m.Update(lifecycleActionMsg{action: action, name: "alpha"})
+			if !updated.(model).recreating["alpha"] {
+				t.Fatal("unrelated completion released recreation lock")
+			}
+		})
+	}
+}
+
+func TestRecreateBlocksConflictingActions(t *testing.T) {
+	for _, action := range []string{"start", "stop", "delete", "update", "recreate"} {
+		t.Run(action, func(t *testing.T) {
+			m := model{
+				workspaces: []workspace.Summary{{Manifest: workspace.Manifest{Name: "alpha"}}},
+				recreating: map[string]bool{"alpha": true},
+			}
+			var cmd tea.Cmd
+			switch action {
+			case "start":
+				_, cmd = m.startSelected()
+			case "stop":
+				_, cmd = m.stopSelected()
+			case "delete":
+				_, cmd = m.deleteSelected()
+			case "update":
+				_, cmd = m.updateSelected()
+			case "recreate":
+				_, cmd = m.recreateSelected()
+			}
+			if cmd != nil {
+				t.Fatal("conflicting action was dispatched during recreation")
+			}
+		})
+	}
+}
