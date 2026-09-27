@@ -2,6 +2,9 @@ package agent
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -21,12 +24,35 @@ func TestRuntimeRegistry(t *testing.T) {
 func TestClaudeCommands(t *testing.T) {
 	provider, _ := NewRegistry().Get(Claude)
 	attach, err := provider.AttachCommand()
-	if err != nil || fmt.Sprint(attach) != "[claude]" {
+	if err != nil || fmt.Sprint(attach[4:]) != "[claude]" {
 		t.Fatalf("AttachCommand = %v, %v", attach, err)
 	}
 	run, err := provider.RunCommand("hello")
-	if err != nil || fmt.Sprint(run) != "[claude -p hello]" {
+	if err != nil || fmt.Sprint(run[4:]) != "[claude -p hello]" {
 		t.Fatalf("RunCommand = %v, %v", run, err)
+	}
+}
+
+// Claude Code runs tools itself: it must start with ~/.env loaded, and the
+// prompt must reach it verbatim (not through the shell).
+func TestClaudeCommandsLoadWorkspaceEnv(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".env"), []byte("export OCM_TEST_VAR=from-env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	provider, _ := NewRegistry().Get(Claude)
+	run, _ := provider.RunCommand(`it's "$HOME" ; $(false)`)
+	// Swap the claude binary for printf to see what it would get.
+	argv := append(append([]string{}, run[:4]...), "sh", "-c", `printf '%s|%s' "$OCM_TEST_VAR" "$2"`, "claude")
+	argv = append(argv, run[5:]...)
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Env = []string{"HOME=" + home, "PATH=" + os.Getenv("PATH")}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("run %v: %v", argv, err)
+	}
+	if got, want := string(out), `from-env|it's "$HOME" ; $(false)`; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
 	}
 }
 
