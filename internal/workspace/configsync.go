@@ -88,6 +88,13 @@ func (s openCodeConfigSyncer) reconcile() error {
 	if err != nil {
 		return fmt.Errorf("list workspaces for shared OpenCode config sync: %w", err)
 	}
+	if s.registry.cfg.SelfImprovement.Enabled {
+		internal, err := s.registry.EnsureImprovement()
+		if err != nil {
+			return err
+		}
+		workspaces = append(workspaces, internal)
+	}
 	for _, workspace := range workspaces {
 		if err := syncWorkspaceOpenCodeConfig(workspace.Manifest.HomeDir); err != nil {
 			return fmt.Errorf("sync shared OpenCode config to workspace %q: %w", workspace.Manifest.Name, err)

@@ -9,4 +9,8 @@ ARG EXTRA_PACKAGES=""
 ARG EXTRA_COMMANDS=":"
 
 RUN if [ -n "${EXTRA_PACKAGES}" ]; then apt-get update && apt-get install -y --no-install-recommends ${EXTRA_PACKAGES} && rm -rf /var/lib/apt/lists/*; fi
-RUN ${EXTRA_COMMANDS}
+# baseImage.commands arrive joined with " && " in one build arg. Expanding it
+# directly (RUN ${EXTRA_COMMANDS}) only word-splits it, so "&&", pipes,
+# redirects and quotes would reach the first command as plain arguments; sh -c
+# parses it as a command line.
+RUN sh -c "${EXTRA_COMMANDS}"

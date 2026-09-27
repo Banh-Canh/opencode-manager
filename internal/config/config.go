@@ -121,9 +121,10 @@ func versionLess(a, b [3]int) bool {
 }
 
 type Config struct {
-	WorkspaceRoot        string `yaml:"workspaceRoot"`
-	Runtime              string `yaml:"runtime"`
-	UseLocalOpenCodeAuth bool   `yaml:"useLocalOpenCodeAuth"`
+	SelfImprovement      SelfImprovementConfig `yaml:"selfImprovement"`
+	WorkspaceRoot        string                `yaml:"workspaceRoot"`
+	Runtime              string                `yaml:"runtime"`
+	UseLocalOpenCodeAuth bool                  `yaml:"useLocalOpenCodeAuth"`
 	// ExtraCACertificates are optional absolute paths to host CA certificates
 	// installed into every workspace container's system trust store.
 	ExtraCACertificates CACertificates `yaml:"extraCACertificate"`
@@ -166,6 +167,12 @@ type Config struct {
 	// home (WorkspaceDir/home) is left in place so its contents survive. Off by
 	// default, in which case a deleted workspace is removed entirely.
 	PreserveData bool `yaml:"preserveData"`
+}
+
+// SelfImprovementConfig enables the private, OpenCode-only analysis workspace.
+type SelfImprovementConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Agent   string `yaml:"agent,omitempty"`
 }
 
 // ExtraMount is a host bind mount made available to every workspace container.
@@ -469,6 +476,9 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) Validate() error {
+	if c.SelfImprovement.Agent != "" && c.SelfImprovement.Agent != "opencode" {
+		return errors.New("selfImprovement.agent must be opencode")
+	}
 	if c.WorkspaceRoot == "" {
 		return errors.New("workspaceRoot is required")
 	}

@@ -32,7 +32,7 @@ const (
 // directly, and the runtime materializes this directory to a temp dir and runs the
 // container builder against it (see writeBuildContext).
 //
-//go:embed buildcontext/Dockerfile buildcontext/Dockerfile.overlay buildcontext/Dockerfile.workspace buildcontext/opencode-manager-attach buildcontext/opencode-manager-entrypoint buildcontext/dsh-tui/package.json buildcontext/dsh-tui/bun.lock buildcontext/dsh-tui/tsconfig.json buildcontext/dsh-tui/README.md buildcontext/dsh-tui/AGENTS.md buildcontext/dsh-tui/dsh-tui buildcontext/dsh-tui/src/* buildcontext/dsh-tui/scripts/* buildcontext/dsh-tui/docs/*
+//go:embed buildcontext/Dockerfile buildcontext/Dockerfile.overlay buildcontext/Dockerfile.workspace buildcontext/opencode-manager-attach buildcontext/opencode-manager-entrypoint buildcontext/opencode-manager-claude-status buildcontext/claude-managed-settings.json buildcontext/dsh-tui/package.json buildcontext/dsh-tui/bun.lock buildcontext/dsh-tui/tsconfig.json buildcontext/dsh-tui/README.md buildcontext/dsh-tui/AGENTS.md buildcontext/dsh-tui/dsh-tui buildcontext/dsh-tui/src/* buildcontext/dsh-tui/scripts/* buildcontext/dsh-tui/docs/*
 var buildContextFS embed.FS
 
 // Build context file names.

@@ -3,6 +3,7 @@ package workspace
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -42,12 +43,12 @@ func TestActivityFromReport(t *testing.T) {
 func TestReadWorkspaceActivityPrefersLiveDeepSeekState(t *testing.T) {
 	home := writeStatus(t, `{"activity":"idle","updatedAt":"`+time.Now().UTC().Format(time.RFC3339)+`"}`)
 	writeStatusAt(t, home, deepSeekStatusFileRelPath, `{"activity":"working","updatedAt":"`+time.Now().UTC().Format(time.RFC3339)+`"}`)
-	if act, _ := readWorkspaceActivity(home, true, true); act != ActivityWorking {
+	if act, _ := readWorkspaceActivity(home, true, true, false); act != ActivityWorking {
 		t.Fatalf("readWorkspaceActivity = %q, want working", act)
 	}
 
 	writeStatusAt(t, home, deepSeekStatusFileRelPath, `{"activity":"needs-approval","pendingApproval":1,"updatedAt":"`+time.Now().UTC().Format(time.RFC3339)+`"}`)
-	if act, pending := readWorkspaceActivity(home, true, true); act != ActivityWaiting || pending != 1 {
+	if act, pending := readWorkspaceActivity(home, true, true, false); act != ActivityWaiting || pending != 1 {
 		t.Fatalf("readWorkspaceActivity = %q,%d, want waiting,1", act, pending)
 	}
 }
@@ -55,7 +56,7 @@ func TestReadWorkspaceActivityPrefersLiveDeepSeekState(t *testing.T) {
 func TestReadWorkspaceActivityShowsDeepSeekStarting(t *testing.T) {
 	home := writeStatus(t, `{"activity":"idle","updatedAt":"`+time.Now().UTC().Format(time.RFC3339)+`"}`)
 	writeStatusAt(t, home, deepSeekStatusFileRelPath, `{"activity":"starting","updatedAt":"`+time.Now().UTC().Format(time.RFC3339)+`"}`)
-	if act, _ := readWorkspaceActivity(home, true, true); act != ActivityUnknown {
+	if act, _ := readWorkspaceActivity(home, true, true, false); act != ActivityUnknown {
 		t.Fatalf("readWorkspaceActivity = %q, want unknown", act)
 	}
 }
@@ -111,5 +112,103 @@ func writeStatusAt(t *testing.T, home, relativePath, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func writeClaudeSession(t *testing.T, home, id, activity string, pending int, age time.Duration) {
+	t.Helper()
+	rel := filepath.Join(claudeStatusDirRelPath, id+".json")
+	writeStatusAt(t, home, rel, `{"activity":"`+activity+`","pendingApproval":`+strconv.Itoa(pending)+`,"updatedAt":"2000-01-01T00:00:00Z"}`)
+	mtime := time.Now().Add(-age)
+	if err := os.Chtimes(filepath.Join(home, rel), mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReadWorkspaceActivityReportsClaude(t *testing.T) {
+	home := writeStatus(t, `{"activity":"idle","updatedAt":"`+time.Now().UTC().Format(time.RFC3339)+`"}`)
+	writeClaudeSession(t, home, "a", "working", 0, 0)
+	if act, _ := readWorkspaceActivity(home, true, false, true); act != ActivityWorking {
+		t.Fatalf("readWorkspaceActivity = %q, want working", act)
+	}
+	if act, _ := readWorkspaceActivity(home, true, false, false); act != ActivitySleeping {
+		t.Fatalf("claude disabled: readWorkspaceActivity = %q, want sleeping", act)
+	}
+	if act, _ := readWorkspaceActivity(home, false, false, true); act != ActivityUnknown {
+		t.Fatalf("stopped: readWorkspaceActivity = %q, want unknown", act)
+	}
+}
+
+func TestReadWorkspaceActivityClaudeWithoutOpenCode(t *testing.T) {
+	home := t.TempDir()
+	writeClaudeSession(t, home, "a", "idle", 0, 0)
+	if act, _ := readWorkspaceActivity(home, true, false, true); act != ActivitySleeping {
+		t.Fatalf("readWorkspaceActivity = %q, want sleeping", act)
+	}
+}
+
+func TestReadWorkspaceActivityAggregatesWaitingRuntimes(t *testing.T) {
+	for _, tc := range []struct {
+		name                           string
+		openCode, deepSeek             int
+		deepSeekEnabled, claudeEnabled bool
+		want                           int
+	}{
+		{"OpenCode and Claude", 2, 0, false, true, 4},
+		{"DeepSeek and Claude", 0, 3, true, true, 5},
+		{"all runtimes", 2, 3, true, true, 7},
+		{"Claude disabled", 2, 3, true, false, 5},
+		{"DeepSeek disabled", 2, 3, false, true, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			for path, pending := range map[string]int{statusFileRelPath: tc.openCode, deepSeekStatusFileRelPath: tc.deepSeek} {
+				activity := "idle"
+				if pending > 0 {
+					activity = "needs-approval"
+				}
+				writeStatusAt(t, home, path, `{"activity":"`+activity+`","pendingApproval":`+strconv.Itoa(pending)+`,"updatedAt":"`+time.Now().UTC().Format(time.RFC3339)+`"}`)
+			}
+			writeClaudeSession(t, home, "a", "needs-approval", 1, 0)
+			writeClaudeSession(t, home, "b", "needs-approval", 1, 0)
+			writeClaudeSession(t, home, "stale", "needs-approval", 9, time.Minute)
+			if act, pending := readWorkspaceActivity(home, true, tc.deepSeekEnabled, tc.claudeEnabled); act != ActivityWaiting || pending != tc.want {
+				t.Fatalf("activity = %q,%d, want waiting,%d", act, pending, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadClaudeActivityAggregatesLiveSessions(t *testing.T) {
+	home := t.TempDir()
+	now := time.Now()
+	if _, _, ok := readClaudeActivity(home, now); ok {
+		t.Fatal("no status directory should report no live session")
+	}
+
+	writeClaudeSession(t, home, "a", "idle", 0, 0)
+	writeClaudeSession(t, home, "b", "needs-approval", 1, 0)
+	writeClaudeSession(t, home, "c", "needs-approval", 1, 0)
+	writeClaudeSession(t, home, "stale", "error", 0, time.Minute)
+	writeStatusAt(t, home, filepath.Join(claudeStatusDirRelPath, "a.heartbeat"), "123")
+	writeStatusAt(t, home, filepath.Join(claudeStatusDirRelPath, "bad.json"), "{")
+
+	act, pending, ok := readClaudeActivity(home, now)
+	if !ok || act != ActivityWaiting || pending != 2 {
+		t.Fatalf("readClaudeActivity = %q,%d,%v, want waiting,2,true", act, pending, ok)
+	}
+
+	writeClaudeSession(t, home, "b", "working", 0, 0)
+	writeClaudeSession(t, home, "c", "idle", 0, 0)
+	act, pending, ok = readClaudeActivity(home, now)
+	if !ok || act != ActivityWorking || pending != 0 {
+		t.Fatalf("readClaudeActivity = %q,%d,%v, want working,0,true", act, pending, ok)
+	}
+
+	for _, id := range []string{"a", "b", "c"} {
+		writeClaudeSession(t, home, id, "idle", 0, time.Minute)
+	}
+	if act, _, ok := readClaudeActivity(home, now); ok {
+		t.Fatalf("only stale sessions: got %q, want none", act)
 	}
 }

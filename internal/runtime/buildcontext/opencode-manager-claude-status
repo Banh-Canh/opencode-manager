@@ -1,0 +1,99 @@
+#!/bin/bash
+# Claude Code hook that reports per-session activity to opencode-manager.
+#
+# Registered for every relevant hook event by claude-managed-settings.json. Each
+# session writes ~/.local/state/opencode-manager/claude/<session_id>.json; the
+# manager reads the directory from the host-mounted home and treats a file whose
+# mtime is older than its staleness window as a session that is no longer alive.
+# Hooks only fire on transitions, so SessionStart spawns a heartbeat that keeps
+# the file fresh while the owning claude process runs and removes it on exit.
+#
+# A hook must never disturb Claude Code, so every failure exits 0 silently.
+
+set -u
+
+dir="${HOME:-/home/debian}/.local/state/opencode-manager/claude"
+input="$(cat)"
+
+field() { jq -r --arg k "$1" '.[$k] // empty' <<<"$input" 2>/dev/null; }
+
+sid="$(field session_id)"
+case "$sid" in
+	"" | */* | .*) exit 0 ;;
+esac
+event="$(field hook_event_name)"
+file="$dir/$sid.json"
+beat="$dir/$sid.heartbeat"
+
+# claude_pid walks up from the hook's parent to the claude process itself, so
+# the heartbeat can follow its lifetime.
+claude_pid() {
+	local pid=$PPID depth=0 comm cmdline
+	while [ "$pid" -gt 1 ] && [ "$depth" -lt 10 ]; do
+		comm="$(cat "/proc/$pid/comm" 2>/dev/null)" || return 1
+		cmdline="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)"
+		case "$comm $cmdline" in
+			claude* | *"/claude "* | *"/claude" | *claude-code*) echo "$pid"; return 0 ;;
+		esac
+		pid="$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null)" || return 1
+		depth=$((depth + 1))
+	done
+	return 1
+}
+
+start_heartbeat() {
+	local pid
+	pid="$(claude_pid)" || return 0
+	# SessionStart also fires on resume and compaction; keep one heartbeat.
+	if [ -f "$beat" ] && kill -0 "$(cat "$beat" 2>/dev/null)" 2>/dev/null; then
+		return 0
+	fi
+	setsid bash -c '
+		while kill -0 "$1" 2>/dev/null; do
+			[ -e "$2" ] && touch "$2"
+			sleep 10
+		done
+		rm -f "$2" "$3"
+	' opencode-manager-claude-heartbeat "$pid" "$file" "$beat" </dev/null >/dev/null 2>&1 &
+	echo $! >"$beat"
+}
+
+write_status() {
+	local tmp="$file.$$"
+	jq -n --arg activity "$1" --argjson pending "$2" \
+		'{activity: $activity, pendingApproval: $pending, sessions: 1, updatedAt: (now | todate)}' \
+		>"$tmp" 2>/dev/null && mv -f "$tmp" "$file"
+	rm -f "$tmp"
+}
+
+mkdir -p "$dir" 2>/dev/null || exit 0
+
+case "$event" in
+	SessionStart)
+		write_status idle 0
+		start_heartbeat
+		;;
+	UserPromptSubmit | PreToolUse | PostToolUse | PostToolUseFailure | SubagentStart | PreCompact)
+		write_status working 0
+		;;
+	PermissionRequest)
+		write_status needs-approval 1
+		;;
+	Notification)
+		case "$(field notification_type)" in
+			permission_prompt | elicitation_dialog) write_status needs-approval 1 ;;
+			idle_prompt) write_status idle 0 ;;
+		esac
+		;;
+	Stop)
+		write_status idle 0
+		;;
+	StopFailure)
+		write_status error 0
+		;;
+	SessionEnd)
+		rm -f "$file"
+		;;
+esac
+
+exit 0

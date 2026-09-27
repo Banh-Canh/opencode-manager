@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mickael-menu/opencode-manager/internal/config"
@@ -29,6 +30,10 @@ var statusFileRelPath = filepath.Join(".local", "state", "opencode-manager", "st
 // DeepSeek Harness session. It stays separate from OpenCode's plugin-owned
 // report so either runtime can be observed independently.
 var deepSeekStatusFileRelPath = filepath.Join(".local", "state", "opencode-manager", "deepseek-status.json")
+
+// claudeStatusDirRelPath holds one report per live Claude Code session, written
+// by the opencode-manager-claude-status hook baked into the workspace image.
+var claudeStatusDirRelPath = filepath.Join(".local", "state", "opencode-manager", "claude")
 
 // activityStaleAfter is how long the status file may go without a heartbeat
 // before the manager assumes opencode is no longer running in the container.
@@ -158,10 +163,76 @@ func readStatusActivity(homeDir, relativePath string, running, newWhenMissing bo
 }
 
 // readWorkspaceActivity combines OpenCode's status plugin with dsh-tui's
-// optional heartbeat. A fresh DSH "starting" report takes precedence so the
-// dashboard reflects connection/bootstrap before a turn begins; otherwise the
-// most urgent live runtime state wins.
-func readWorkspaceActivity(homeDir string, running, deepSeekEnabled bool) (Activity, int) {
+// optional heartbeat and any live Claude Code sessions. The most urgent live
+// runtime state wins.
+func readWorkspaceActivity(homeDir string, running, deepSeekEnabled, claudeEnabled bool) (Activity, int) {
+	activity, pending := readOpenCodeDeepSeekActivity(homeDir, running, deepSeekEnabled)
+	if !claudeEnabled || !running {
+		return activity, pending
+	}
+	claudeActivity, claudePending, ok := readClaudeActivity(homeDir, time.Now())
+	if ok && activity == ActivityWaiting && claudeActivity == ActivityWaiting {
+		return ActivityWaiting, pending + claudePending
+	}
+	if ok && activityPriority(claudeActivity) > activityPriority(activity) {
+		return claudeActivity, claudePending
+	}
+	return activity, pending
+}
+
+// readClaudeActivity aggregates the per-session reports of the Claude Code
+// hook. Hooks only fire on transitions, so liveness comes from the file mtime,
+// which a per-session heartbeat refreshes while the claude process runs. ok is
+// false when no session is live.
+func readClaudeActivity(homeDir string, now time.Time) (Activity, int, bool) {
+	if homeDir == "" {
+		return ActivityUnknown, 0, false
+	}
+	dir := filepath.Join(homeDir, claudeStatusDirRelPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ActivityUnknown, 0, false
+	}
+
+	best, pending, ok := ActivityUnknown, 0, false
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var report statusReport
+		if err := json.Unmarshal(data, &report); err != nil {
+			slog.Debug("malformed claude status file", "path", filepath.Join(dir, entry.Name()), "error", err)
+			continue
+		}
+		report.UpdatedAt = info.ModTime()
+		activity, sessionPending := activityFromReport(report, now)
+		if activity == ActivityOff || activity == ActivityUnknown {
+			continue
+		}
+		ok = true
+		pending += sessionPending
+		if activityPriority(activity) > activityPriority(best) {
+			best = activity
+		}
+	}
+	if best != ActivityWaiting {
+		pending = 0
+	}
+	return best, pending, ok
+}
+
+// readOpenCodeDeepSeekActivity combines OpenCode with dsh-tui. A fresh DSH
+// "starting" report takes precedence so the dashboard reflects
+// connection/bootstrap before a turn begins.
+func readOpenCodeDeepSeekActivity(homeDir string, running, deepSeekEnabled bool) (Activity, int) {
 	openCodeActivity, openCodePending := readActivity(homeDir, running)
 	if !deepSeekEnabled {
 		return openCodeActivity, openCodePending
@@ -172,6 +243,9 @@ func readWorkspaceActivity(homeDir string, running, deepSeekEnabled bool) (Activ
 		return openCodeActivity, openCodePending
 	}
 	deepSeekActivity, deepSeekPending := readStatusActivity(homeDir, deepSeekStatusFileRelPath, running, false)
+	if openCodeActivity == ActivityWaiting && deepSeekActivity == ActivityWaiting {
+		return ActivityWaiting, openCodePending + deepSeekPending
+	}
 	if deepSeekActivity == ActivityUnknown && running {
 		return ActivityUnknown, deepSeekPending
 	}

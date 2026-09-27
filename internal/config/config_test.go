@@ -59,6 +59,19 @@ func TestLoadParsesHostNetwork(t *testing.T) {
 	}
 }
 
+func TestSelfImprovementConfiguration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, path, []byte("selfImprovement:\n  enabled: true\n  agent: opencode\n"))
+	cfg, err := Load(path)
+	if err != nil || !cfg.SelfImprovement.Enabled || cfg.SelfImprovement.Agent != "opencode" {
+		t.Fatalf("selfImprovement config = %+v, %v", cfg.SelfImprovement, err)
+	}
+	writeFile(t, path, []byte("selfImprovement:\n  enabled: true\n  agent: deepseek\n"))
+	if _, err := Load(path); err == nil {
+		t.Fatal("unsupported improvement agent should be rejected")
+	}
+}
+
 func TestLoadParsesExtraMounts(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "shared")

@@ -36,6 +36,22 @@ func TestCompactCount(t *testing.T) {
 	}
 }
 
+func TestImprovementShortcutDoesNotRequireSelection(t *testing.T) {
+	m := model{baseImageReady: true, registry: workspace.NewRegistry(config.Config{WorkspaceRoot: t.TempDir()})}
+	updated, cmd := m.updateKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	if cmd == nil {
+		t.Fatal("i should open the dedicated flow even with an empty workspace list")
+	}
+	msg, ok := cmd().(attachReadyMsg)
+	if !ok || msg.err == nil || !strings.Contains(msg.err.Error(), "selfImprovement.enabled") {
+		t.Fatalf("unexpected disabled shortcut result: %+v", msg)
+	}
+	next, _ := updated.(model).Update(msg)
+	if !strings.Contains(next.(model).errorMessage, "selfImprovement.enabled") {
+		t.Fatal("shortcut failure should appear in the error popup")
+	}
+}
+
 func TestWorkspaceTokensDisplay(t *testing.T) {
 	ws := workspace.Summary{Manifest: workspace.Manifest{Name: "app"}}
 	m := model{tokens: map[string]tokenState{}}

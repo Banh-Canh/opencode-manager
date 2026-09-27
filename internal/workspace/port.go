@@ -1,8 +1,10 @@
 package workspace
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"os"
 )
 
 const (
@@ -46,6 +48,14 @@ func (r Registry) allocateRuntimePort(reserved ...int) (int, error) {
 	}
 
 	used := make(map[int]bool, len(summaries))
+	// Internal instances stay invisible to List, but still reserve server ports,
+	// including while disabled or stopped.
+	internal, err := r.improvementSummary()
+	if err == nil {
+		summaries = append(summaries, internal)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return 0, err
+	}
 	for _, s := range summaries {
 		if s.Manifest.OpenCodePort != 0 {
 			used[s.Manifest.OpenCodePort] = true
