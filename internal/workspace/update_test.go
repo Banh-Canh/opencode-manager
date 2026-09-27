@@ -87,6 +87,15 @@ func (d *updateDriver) CreateContainer(context.Context, runtime.ContainerSpec) e
 // again once a new container has been started.
 type recreateDriver struct {
 	*updateDriver
+	missingWorkspaceImage bool
+}
+
+func (d *recreateDriver) ImageID(_ context.Context, name string) (string, error) {
+	// Only the workspace image is cached; its base has been pruned.
+	if name == "ocm/demo:latest" && !d.missingWorkspaceImage {
+		return "same", nil
+	}
+	return "", nil
 }
 
 func (d *recreateDriver) ContainerStatus(context.Context, string) (string, error) {
@@ -125,11 +134,26 @@ func TestRecreateContainerReplacesContainerAndKeepsWorkspace(t *testing.T) {
 	if len(driver.pulled) != 0 {
 		t.Fatalf("pulls = %v, recreate must not refresh the base image", driver.pulled)
 	}
+	if len(driver.builds) != 0 {
+		t.Fatalf("builds = %v, recreate must reuse the existing workspace image", driver.builds)
+	}
 	kept, err := LoadManifest(filepath.Join(path, ManifestFile))
 	if err != nil {
 		t.Fatalf("workspace manifest should be kept: %v", err)
 	}
 	if kept.Image.BaseImage != summary.Manifest.Image.BaseImage {
 		t.Fatalf("base image = %q, recreate must keep the workspace image config", kept.Image.BaseImage)
+	}
+}
+
+func TestRecreateMissingImagePreservesContainer(t *testing.T) {
+	driver := &recreateDriver{updateDriver: &updateDriver{fakeDriver: &fakeDriver{}}, missingWorkspaceImage: true}
+	summary := Summary{Manifest: Manifest{Name: "demo", ContainerName: "demo", ImageName: "ocm/demo:latest", OpenCodePort: 4096}}
+	l := Lifecycle{driver: driver}
+	if err := l.RecreateContainer(context.Background(), summary); err == nil {
+		t.Fatal("expected error for missing workspace image")
+	}
+	if driver.removed != 0 || driver.created != 0 || len(driver.pulled) != 0 || len(driver.builds) != 0 {
+		t.Fatalf("missing image must leave the container untouched: %+v", driver.updateDriver)
 	}
 }

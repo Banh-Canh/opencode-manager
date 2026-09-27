@@ -166,10 +166,14 @@ func (l Lifecycle) EnsureStarted(ctx context.Context, summary Summary) error {
 }
 
 func (l Lifecycle) ensureStarted(ctx context.Context, summary Summary, refreshBase bool) error {
+	return l.ensureStartedWithOptions(ctx, summary, refreshBase, false)
+}
+
+func (l Lifecycle) ensureStartedWithOptions(ctx context.Context, summary Summary, refreshBase, recreate bool) error {
 	name := summary.Manifest.ContainerName
 	slog.Info("ensuring workspace is started", "workspace", summary.Manifest.Name, "container", name)
 
-	status, spec, err := l.provisionWithBaseRefresh(ctx, summary, refreshBase)
+	status, spec, err := l.provisionWithOptions(ctx, summary, refreshBase, recreate)
 	if err != nil {
 		return err
 	}
@@ -244,6 +248,10 @@ func (l Lifecycle) provision(ctx context.Context, summary Summary) (string, runt
 }
 
 func (l Lifecycle) provisionWithBaseRefresh(ctx context.Context, summary Summary, refreshBase bool) (string, runtime.ContainerSpec, error) {
+	return l.provisionWithOptions(ctx, summary, refreshBase, false)
+}
+
+func (l Lifecycle) provisionWithOptions(ctx context.Context, summary Summary, refreshBase, recreate bool) (string, runtime.ContainerSpec, error) {
 	if err := l.driver.Available(ctx); err != nil {
 		return runtime.StatusUnknown, runtime.ContainerSpec{}, err
 	}
@@ -276,19 +284,32 @@ func (l Lifecycle) provisionWithBaseRefresh(ctx context.Context, summary Summary
 		manifest.DeepSeekPort = port
 	}
 
-	baseImageName, err := l.resolveBaseImageWithRefresh(ctx, manifest.Image, refreshBase)
-	if err != nil {
-		return runtime.StatusUnknown, runtime.ContainerSpec{}, err
-	}
+	if recreate {
+		// Recovery must use the existing workspace image, even if its base was
+		// pruned. Check it before removing the old container.
+		id, err := l.driver.ImageID(ctx, manifest.ImageName)
+		if err != nil {
+			return runtime.StatusUnknown, runtime.ContainerSpec{}, fmt.Errorf("inspect workspace image: %w", err)
+		}
+		if id == "" {
+			return runtime.StatusUnknown, runtime.ContainerSpec{}, fmt.Errorf("workspace image %q is missing; update the workspace image first", manifest.ImageName)
+		}
+	} else {
+		baseImageName, err := l.resolveBaseImageWithRefresh(ctx, manifest.Image, refreshBase)
+		if err != nil {
+			return runtime.StatusUnknown, runtime.ContainerSpec{}, err
+		}
 
-	if err := l.driver.BuildImage(ctx, runtime.BuildSpec{
-		ImageName: manifest.ImageName,
-		BaseImage: baseImageName,
-		UID:       uid,
-		GID:       gid,
-		Refresh:   refreshBase,
-	}); err != nil {
-		return runtime.StatusUnknown, runtime.ContainerSpec{}, err
+		if err := l.driver.BuildImage(ctx, runtime.BuildSpec{
+			ImageName: manifest.ImageName,
+			BaseImage: baseImageName,
+			UID:       uid,
+			GID:       gid,
+			Refresh:   refreshBase,
+		}); err != nil {
+			return runtime.StatusUnknown, runtime.ContainerSpec{}, err
+		}
+
 	}
 
 	// Converge shared host OpenCode configuration into the writable workspace
@@ -379,9 +400,11 @@ func (l Lifecycle) provisionWithBaseRefresh(ctx context.Context, summary Summary
 		if serr != nil {
 			stale = false
 		}
-		if refreshBase || stale || l.containerSpecDrift(ctx, manifest, spec) {
+		if recreate || refreshBase || stale || l.containerSpecDrift(ctx, manifest, spec) {
 			reason := "config drift"
-			if refreshBase {
+			if recreate {
+				reason = "explicit recovery"
+			} else if refreshBase {
 				reason = "base image update"
 			} else if stale {
 				reason = "stale image"
@@ -615,10 +638,7 @@ func (l Lifecycle) Stop(ctx context.Context, summary Summary) error {
 // broken state, e.g. after an interrupted update.
 func (l Lifecycle) RecreateContainer(ctx context.Context, summary Summary) error {
 	slog.Info("recreating workspace container", "workspace", summary.Manifest.Name, "container", summary.Manifest.ContainerName)
-	if err := l.driver.RemoveContainer(ctx, summary.Manifest.ContainerName); err != nil {
-		return fmt.Errorf("remove workspace container: %w", err)
-	}
-	if err := l.ensureStarted(ctx, summary, false); err != nil {
+	if err := l.ensureStartedWithOptions(ctx, summary, false, true); err != nil {
 		return fmt.Errorf("start recreated workspace container: %w", err)
 	}
 	return nil

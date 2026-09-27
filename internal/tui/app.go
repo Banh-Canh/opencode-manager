@@ -618,7 +618,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.baseSpinnerFrame++
 		return m, baseSpinnerCmd()
 	case lifecycleActionMsg:
-		delete(m.recreating, msg.name)
+		if msg.action == "Recreate" {
+			delete(m.recreating, msg.name)
+		}
 		if msg.err != nil {
 			slog.Error("lifecycle action failed", "action", msg.action, "workspace", msg.name, "error", msg.err)
 			m.showError(msg.action, fmt.Sprintf("%s failed for %s: %v", msg.action, msg.name, msg.err))
@@ -1246,6 +1248,10 @@ func (m model) stopSelected() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.recreating[selected.Manifest.Name] {
+		m.message = "Wait until container recreation finishes."
+		return m, nil
+	}
 	m.message = "Stopping " + selected.Manifest.Name + "..."
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -1265,6 +1271,10 @@ func (m model) deleteSelected() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.recreating[selected.Manifest.Name] {
+		m.message = "Wait until container recreation finishes."
+		return m, nil
+	}
 	m.message = "Deleting " + selected.Manifest.Name + "..."
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -1450,6 +1460,10 @@ func (m model) startSelected() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.recreating[selected.Manifest.Name] {
+		m.message = "Wait until container recreation finishes."
+		return m, nil
+	}
 	m.message = "Starting " + selected.Manifest.Name + "..."
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)

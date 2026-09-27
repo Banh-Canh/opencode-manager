@@ -771,3 +771,45 @@ func TestRecreateMarksWorkspaceUntilDone(t *testing.T) {
 		t.Fatal("recreating flag should clear once the action completes")
 	}
 }
+
+func TestRecreateLockSurvivesOtherLifecycleCompletions(t *testing.T) {
+	for _, action := range []string{"Start", "Stop", "Delete"} {
+		t.Run(action, func(t *testing.T) {
+			m := model{
+				workspaces: []workspace.Summary{{Manifest: workspace.Manifest{Name: "alpha"}}},
+				recreating: map[string]bool{"alpha": true},
+			}
+			updated, _ := m.Update(lifecycleActionMsg{action: action, name: "alpha"})
+			if !updated.(model).recreating["alpha"] {
+				t.Fatal("unrelated completion released recreation lock")
+			}
+		})
+	}
+}
+
+func TestRecreateBlocksConflictingActions(t *testing.T) {
+	for _, action := range []string{"start", "stop", "delete", "update", "recreate"} {
+		t.Run(action, func(t *testing.T) {
+			m := model{
+				workspaces: []workspace.Summary{{Manifest: workspace.Manifest{Name: "alpha"}}},
+				recreating: map[string]bool{"alpha": true},
+			}
+			var cmd tea.Cmd
+			switch action {
+			case "start":
+				_, cmd = m.startSelected()
+			case "stop":
+				_, cmd = m.stopSelected()
+			case "delete":
+				_, cmd = m.deleteSelected()
+			case "update":
+				_, cmd = m.updateSelected()
+			case "recreate":
+				_, cmd = m.recreateSelected()
+			}
+			if cmd != nil {
+				t.Fatal("conflicting action was dispatched during recreation")
+			}
+		})
+	}
+}
