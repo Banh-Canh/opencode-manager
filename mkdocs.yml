@@ -50,6 +50,7 @@ nav:
       - TUI Guide: tui.md
       - CLI Reference: cli.md
       - Configuration: configuration.md
+      - Self Improvement: self-improvement.md
   - Modules:
       - Using Modules: modules.md
       - Writing Modules: writing-modules.md

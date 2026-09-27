@@ -37,6 +37,8 @@ function ensureConfig() {
     "extraCACertificate: []",
     "workspaceEnv: {}",
     "extraMounts: []",
+    "selfImprovement:",
+    "  enabled: false",
     "baseImage:",
     "  name: docker.io/mroger78/ocm-base:latest",
     "  packages: []",

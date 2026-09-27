@@ -34,6 +34,7 @@ general command line. The available views (*kinds*) are:
 | `^f` / `^b` | Page down / page up |
 | `↵` (Enter) | **Attach** to the selected workspace's default agent runtime |
 | `^a` (Ctrl+A) | Open the **agent picker**, then attach with the selected agent |
+| `i` | Open the opt-in **self-improvement** workspace (no selection required) |
 | `s` | Open a **shell** in the workspace container |
 | `t` | **Start / stop** the container (toggle) |
 | `d` | **Describe** the workspace (details + token breakdown) |
@@ -81,6 +82,13 @@ picker (`Ctrl+M`), and `@` file references, it provides:
   graph: tasks layered by dependencies with state markers, assignees, and
   dependency trails, plus member progress. `Enter` refreshes the view. Both the
   shortcut and the command exist only when the plugin is detected.
+
+### Self improvement (`i`)
+
+Opens the private OpenCode analysis workspace when `selfImprovement.enabled` is
+set in `config.yaml`. It is excluded from the workspace table and selectors.
+Use `/analyze`, `/audit-harness`, and `/proposals` inside its OpenCode session.
+See [Self improvement](self-improvement.md) for setup and session coverage.
 
 ### Shell (`s`)
 
