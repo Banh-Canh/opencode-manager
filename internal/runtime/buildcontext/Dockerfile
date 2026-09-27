@@ -107,12 +107,16 @@ COPY dsh-tui /opt/dsh-tui
 COPY dsh-tui/dsh-tui /usr/local/bin/dsh-tui
 RUN cd /opt/dsh-tui && bun install --frozen-lockfile --production && bun run build && chmod 0755 /usr/local/bin/dsh-tui
 
-# Manager scripts: the attach wrapper and the supervisor entrypoint (PID 1). They
+# Manager scripts: the attach wrapper, the supervisor entrypoint (PID 1), and the
+# Claude Code activity hook (registered through managed settings). They
 # are COPYed rather than written via heredoc, which the buildah builder used by
 # Podman does not support.
 COPY opencode-manager-attach /usr/local/bin/opencode-manager-attach
 COPY opencode-manager-entrypoint /usr/local/bin/opencode-manager-entrypoint
-RUN chmod 0755 /usr/local/bin/opencode-manager-attach /usr/local/bin/opencode-manager-entrypoint
+COPY opencode-manager-claude-status /usr/local/bin/opencode-manager-claude-status
+COPY claude-managed-settings.json /etc/claude-code/managed-settings.json
+RUN chmod 0755 /usr/local/bin/opencode-manager-attach /usr/local/bin/opencode-manager-entrypoint /usr/local/bin/opencode-manager-claude-status \
+    && chmod 0644 /etc/claude-code/managed-settings.json
 
 # Passwordless sudo for everyone: the workspace user (and the OpenCode server)
 # run under a numeric --user UID:GID, which does NOT load supplementary groups

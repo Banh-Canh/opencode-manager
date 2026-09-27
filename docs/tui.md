@@ -165,3 +165,10 @@ Workspaces report a lifecycle status in the dashboard (for example *creating*,
 *working*, *waiting*, *sleeping*, *restarting*, *paused*, *removing*, *dead*).
 A workspace that is waiting for interaction is surfaced on the central dashboard
 so you can jump straight to it.
+
+Activity is reported by every agent runtime running in the workspace: OpenCode
+through its status plugin, DeepSeek Harness through `dsh-tui`, and Claude Code
+through hooks registered in the image's managed settings. When several are
+active, the most urgent state wins (*waiting* over *error* over *working* over
+*sleeping*). Claude Code has no hook for a rejected permission or an interrupted
+turn, so such a session keeps its last state until the next prompt.
