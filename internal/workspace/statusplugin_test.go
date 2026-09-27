@@ -87,6 +87,15 @@ func TestReadActivityParsesFile(t *testing.T) {
 	}
 }
 
+func TestReadDeepSeekUsage(t *testing.T) {
+	home := t.TempDir()
+	writeStatusAt(t, home, deepSeekStatusFileRelPath, `{"totalTokens":321,"messageCount":4}`)
+	tokens, messages := readDeepSeekUsage(home)
+	if tokens != 321 || messages != 4 {
+		t.Fatalf("readDeepSeekUsage = %d,%d; want 321,4", tokens, messages)
+	}
+}
+
 func writeStatus(t *testing.T, content string) string {
 	t.Helper()
 	home := t.TempDir()

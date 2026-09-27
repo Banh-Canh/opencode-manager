@@ -144,9 +144,12 @@ type model struct {
 	updateLatest string
 
 	// module edit flow (see edit.go)
-	editMode    bool
-	editEntries []editEntry
-	editPos     int
+	editMode            bool
+	editEntries         []editEntry
+	editPos             int
+	editRuntimeChoices  []string
+	editRuntimePos      int
+	editOriginalRuntime string
 	// editTemplateMode makes the module editor act on editTemplate (saving it)
 	// instead of a selected workspace's live modules. See editTemplate/applyTemplateEdit.
 	editTemplateMode bool
@@ -642,12 +645,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case editApplyMsg:
 		delete(m.installing, msg.name)
 		if msg.err != nil {
-			slog.Error("module edit failed", "workspace", msg.name, "error", msg.err)
-			m.showError("Edit Modules", fmt.Sprintf("Module edit failed for %s: %v", msg.name, msg.err))
+			slog.Error("workspace edit failed", "workspace", msg.name, "error", msg.err)
+			m.showError("Edit Workspace", fmt.Sprintf("Workspace edit failed for %s: %v", msg.name, msg.err))
 			return m, tea.Batch(m.loadWorkspaces, m.loadStatuses)
 		}
-		slog.Info("module edit completed", "workspace", msg.name, "summary", msg.summary)
-		m.message = fmt.Sprintf("Modules updated for %s: %s.", msg.name, msg.summary)
+		slog.Info("workspace edit completed", "workspace", msg.name, "summary", msg.summary)
+		m.message = fmt.Sprintf("Workspace updated for %s: %s.", msg.name, msg.summary)
 		return m, tea.Batch(m.loadWorkspaces, m.loadStatuses)
 	case baseImageReadyMsg:
 		if msg.err != nil {

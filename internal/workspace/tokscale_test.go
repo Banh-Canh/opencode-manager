@@ -3,7 +3,9 @@ package workspace
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -59,6 +61,14 @@ func contains(args []string, want string) bool {
 }
 
 func TestTokenUsageAggregates(t *testing.T) {
+	home := t.TempDir()
+	statusPath := filepath.Join(home, deepSeekStatusFileRelPath)
+	if err := os.MkdirAll(filepath.Dir(statusPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statusPath, []byte(`{"totalTokens":100,"messageCount":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	fake := &fakeDriver{output: func(args []string) []byte {
 		if contains(args, "--today") {
 			return []byte(`{"entries":[{"input":100,"output":50,"cacheRead":10,"cacheWrite":0,"reasoning":5,"messageCount":3,"cost":0.01}]}`)
@@ -69,16 +79,16 @@ func TestTokenUsageAggregates(t *testing.T) {
 	}}
 
 	l := Lifecycle{driver: fake}
-	usage, err := l.TokenUsage(context.Background(), Summary{Manifest: Manifest{ContainerName: "c", HomeDir: "/h"}})
+	usage, err := l.TokenUsage(context.Background(), Summary{Manifest: Manifest{ContainerName: "c", HomeDir: home}})
 	if err != nil {
 		t.Fatalf("TokenUsage error: %v", err)
 	}
 
-	if usage.TotalTokens != 1685 {
-		t.Errorf("TotalTokens=%d want 1685", usage.TotalTokens)
+	if usage.TotalTokens != 1785 {
+		t.Errorf("TotalTokens=%d want 1785", usage.TotalTokens)
 	}
-	if usage.TotalMsgs != 13 {
-		t.Errorf("TotalMsgs=%d want 13", usage.TotalMsgs)
+	if usage.TotalMsgs != 15 {
+		t.Errorf("TotalMsgs=%d want 15", usage.TotalMsgs)
 	}
 	if usage.TotalInput != 1010 {
 		t.Errorf("TotalInput=%d want 1010", usage.TotalInput)

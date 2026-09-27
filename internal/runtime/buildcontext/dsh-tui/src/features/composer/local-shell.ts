@@ -8,6 +8,10 @@ export interface LocalShellResult {
 export async function runLocalShell(command: string, cwd: string): Promise<LocalShellResult> {
   const shell = process.env.SHELL || "/bin/sh"
   const child = Bun.spawn([shell, "-lc", command], { cwd, stdout: "pipe", stderr: "pipe" })
-  const [stdout, stderr, exitCode] = await Promise.all([child.stdout.text(), child.stderr.text(), child.exited])
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ])
   return { output: `${stdout}${stderr}`, exitCode }
 }

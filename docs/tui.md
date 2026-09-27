@@ -38,7 +38,7 @@ general command line. The available views (*kinds*) are:
 | `t` | **Start / stop** the container (toggle) |
 | `d` | **Describe** the workspace (details + token breakdown) |
 | `l` | View the latest OpenCode session's input/output transcript |
-| `e` | **Edit** the workspace's modules |
+| `e` | **Edit** the workspace configuration and modules |
 | `u` | **Update** the workspace base image and replace its container |
 | `c` | **Create** a workspace |
 | `^d` | **Delete** the workspace |
@@ -103,9 +103,11 @@ stream and includes OpenCode text, reasoning, tool output, and todo updates.
 Press `s` to toggle auto-scroll, use `↑`/`↓` and `^f`/`^b` to scroll, and press
 `Esc` to return to the dashboard.
 
-### Edit modules (`e`)
+### Edit workspace (`e`)
 
-Opens the module editor for the selected workspace. Modules are shown as a
+Opens the workspace editor. Use `←`/`→` to change the default agent among the
+enabled runtimes; this affects the next `Enter` attach and does not restart the
+container. Modules are shown as a
 **category browser** (a category header with its modules indented beneath), and
 `/` filters by name, description, or category. See
 [Modules](modules.md) for what you can add.

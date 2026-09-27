@@ -75,6 +75,15 @@ func (m model) editSelected() (tea.Model, tea.Cmd) {
 	m.editMode = true
 	m.editTemplateMode = false
 	m.editEntries = entries
+	m.editRuntimeChoices = selected.Manifest.EnabledRuntimeNames()
+	m.editOriginalRuntime = selected.Manifest.EffectiveDefaultRuntime()
+	m.editRuntimePos = 0
+	for i, name := range m.editRuntimeChoices {
+		if name == m.editOriginalRuntime {
+			m.editRuntimePos = i
+			break
+		}
+	}
 	m.editCollapsed = collapsed
 	m.editPos = 0
 	m.editFilter = ""
@@ -187,6 +196,14 @@ func (m model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.editPos = m.prevVisibleEdit(m.editPos)
 	case "down", "j":
 		m.editPos = m.nextVisibleEdit(m.editPos)
+	case "left", "h":
+		if !m.editTemplateMode && len(m.editRuntimeChoices) > 1 {
+			m.editRuntimePos = (m.editRuntimePos - 1 + len(m.editRuntimeChoices)) % len(m.editRuntimeChoices)
+		}
+	case "right", "l":
+		if !m.editTemplateMode && len(m.editRuntimeChoices) > 1 {
+			m.editRuntimePos = (m.editRuntimePos + 1) % len(m.editRuntimeChoices)
+		}
 	case "g", "home":
 		if p := m.firstVisibleEdit(); p >= 0 {
 			m.editPos = p
@@ -854,6 +871,11 @@ func (m model) applyEdit() (tea.Model, tea.Cmd) {
 	}
 	var adds []addOp
 	var removes []string
+	runtimeName := m.editOriginalRuntime
+	if len(m.editRuntimeChoices) > 0 {
+		runtimeName = m.editRuntimeChoices[m.editRuntimePos]
+	}
+	runtimeChanged := runtimeName != m.editOriginalRuntime
 	needsRestart := false
 	for _, e := range m.editEntries {
 		if e.isCategory || e.isAdd {
@@ -869,9 +891,9 @@ func (m model) applyEdit() (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if len(adds) == 0 && len(removes) == 0 {
+	if !runtimeChanged && len(adds) == 0 && len(removes) == 0 {
 		m.editMode = false
-		m.message = "No module changes."
+		m.message = "No workspace changes."
 		return m, nil
 	}
 
@@ -889,17 +911,22 @@ func (m model) applyEdit() (tea.Model, tea.Cmd) {
 
 	name := selected.Manifest.Name
 	m.editMode = false
-	m.message = fmt.Sprintf("Applying module changes to %s (+%d/-%d)...", name, len(adds), len(removes))
+	m.message = fmt.Sprintf("Applying workspace changes to %s...", name)
 
-	// Freeze interactive access to this workspace until the job finishes: the
-	// install/uninstall scripts run inside the container and may bounce the
-	// OpenCode server, so attaching mid-install would land in a half-configured
-	// session. Cleared when editApplyMsg arrives.
-	m.installing[name] = true
+	// Runtime-only edits only update manifest metadata. Module changes freeze
+	// interactive access while their scripts run inside the container.
+	if len(adds) > 0 || len(removes) > 0 {
+		m.installing[name] = true
+	}
 
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
+		if runtimeChanged {
+			if _, err := m.registry.SetDefaultRuntime(selected, runtimeName); err != nil {
+				return editApplyMsg{name: name, err: fmt.Errorf("set default agent: %w", err)}
+			}
+		}
 		for _, a := range adds {
 			if err := m.lifecycle.AddModule(ctx, selected, a.mod, a.vals); err != nil {
 				return editApplyMsg{name: name, err: fmt.Errorf("install %s: %w", a.mod.Name, err)}
@@ -910,7 +937,11 @@ func (m model) applyEdit() (tea.Model, tea.Cmd) {
 				return editApplyMsg{name: name, err: fmt.Errorf("remove %s: %w", rn, err)}
 			}
 		}
-		return editApplyMsg{name: name, summary: fmt.Sprintf("+%d/-%d", len(adds), len(removes))}
+		summary := fmt.Sprintf("modules +%d/-%d", len(adds), len(removes))
+		if runtimeChanged {
+			summary = "default agent " + runtimeDisplayName(runtimeName) + ", " + summary
+		}
+		return editApplyMsg{name: name, summary: summary}
 	}
 }
 
@@ -982,6 +1013,11 @@ func (m model) renderEditPage(width, height int) string {
 
 	rows := make([]string, 0, height-1)
 	rows = append(rows, blank)
+	if !m.editTemplateMode && len(m.editRuntimeChoices) > 0 {
+		runtimeName := m.editRuntimeChoices[m.editRuntimePos]
+		rows = append(rows, " "+fit("Default agent: < "+runtimeDisplayName(runtimeName)+" >", contentWidth)+" ")
+		rows = append(rows, blank)
+	}
 	if len(m.editEntries) == 0 {
 		rows = append(rows, " "+mutedStyle.Render(fit("No modules available.", contentWidth))+" ")
 	} else if m.firstVisibleEdit() < 0 {
@@ -1019,14 +1055,14 @@ func (m model) renderEditPage(width, height int) string {
 
 	rows = append(rows, blank)
 	if len(rows) < height-1 {
-		hint := "↑/↓ move · enter expand · space toggle · / filter · a apply · esc cancel"
+		hint := "↑/↓ move · ←/→ default agent · enter expand · space toggle · / filter · a apply · esc cancel"
 		rows = append(rows, " "+mutedStyle.Render(fit(hint, contentWidth))+" ")
 	}
 	for len(rows) < height-1 {
 		rows = append(rows, blank)
 	}
 
-	title := titleStyle.Render("Edit modules")
+	title := titleStyle.Render("Edit workspace")
 	if m.editTemplateMode {
 		title = titleStyle.Render("Template modules") + counterStyle.Render("("+m.editTemplate.Name+")")
 	} else if selected, ok := m.selectedWorkspace(); ok {
