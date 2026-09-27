@@ -82,3 +82,54 @@ func (d *updateDriver) CreateContainer(context.Context, runtime.ContainerSpec) e
 	d.created++
 	return nil
 }
+
+// recreateDriver reports the container as missing once removed, and running
+// again once a new container has been started.
+type recreateDriver struct {
+	*updateDriver
+}
+
+func (d *recreateDriver) ContainerStatus(context.Context, string) (string, error) {
+	switch {
+	case d.removed > 0 && d.created == 0:
+		return runtime.StatusMissing, nil
+	case d.created > d.started:
+		return runtime.StatusCreated, nil
+	default:
+		return runtime.StatusRunning, nil
+	}
+}
+
+func TestRecreateContainerReplacesContainerAndKeepsWorkspace(t *testing.T) {
+	driver := &recreateDriver{updateDriver: &updateDriver{fakeDriver: &fakeDriver{}}}
+	path := t.TempDir()
+	summary := Summary{Manifest: Manifest{
+		Name:          "demo",
+		ImageName:     "ocm/demo:latest",
+		Image:         ImageConfig{BaseImage: "docker.io/mroger78/ocm-base:0.7.0"},
+		ContainerName: "demo",
+		HomeDir:       filepath.Join(path, "home"),
+		OpenCodePort:  4096,
+	}, Path: path}
+	if err := SaveManifest(filepath.Join(path, ManifestFile), summary.Manifest); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	l := Lifecycle{cfg: config.Config{Runtime: config.RuntimeDocker, BaseImage: config.BaseImageConfig{Name: config.DefaultBaseImage}}, driver: driver, agents: agent.NewRegistry()}
+
+	if err := l.RecreateContainer(context.Background(), summary); err != nil {
+		t.Fatalf("RecreateContainer error: %v", err)
+	}
+	if driver.removed != 1 || driver.created != 1 || driver.started != 1 {
+		t.Fatalf("replacement = remove:%d create:%d start:%d, want 1 each", driver.removed, driver.created, driver.started)
+	}
+	if len(driver.pulled) != 0 {
+		t.Fatalf("pulls = %v, recreate must not refresh the base image", driver.pulled)
+	}
+	kept, err := LoadManifest(filepath.Join(path, ManifestFile))
+	if err != nil {
+		t.Fatalf("workspace manifest should be kept: %v", err)
+	}
+	if kept.Image.BaseImage != summary.Manifest.Image.BaseImage {
+		t.Fatalf("base image = %q, recreate must keep the workspace image config", kept.Image.BaseImage)
+	}
+}

@@ -138,6 +138,9 @@ type model struct {
 	// provisionWorkspaceMsg arrives.
 	provisioning map[string]bool
 	updating     map[string]bool
+	// recreating tracks workspaces whose container is being removed and started
+	// fresh (see recreateSelected), shown as "recreating" in the STATUS column.
+	recreating map[string]bool
 
 	// set when the npm registry reports a newer release than appVersion; the
 	// header shows an "update available" notice (see checkForUpdate).
@@ -218,6 +221,7 @@ var actions = []action{
 	{Key: "l", Cmd: "logs", Desc: "Logs"},
 	{Key: "e", Cmd: "edit", Desc: "Edit"},
 	{Key: "u", Cmd: "update", Desc: "Update"},
+	{Key: "r", Cmd: "recreate", Desc: "Recreate"},
 	{Key: "c", Cmd: "create", Desc: "Create"},
 	{Key: "ctrl-d", Cmd: "delete", Desc: "Delete"},
 }
@@ -614,6 +618,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.baseSpinnerFrame++
 		return m, baseSpinnerCmd()
 	case lifecycleActionMsg:
+		delete(m.recreating, msg.name)
 		if msg.err != nil {
 			slog.Error("lifecycle action failed", "action", msg.action, "workspace", msg.name, "error", msg.err)
 			m.showError(msg.action, fmt.Sprintf("%s failed for %s: %v", msg.action, msg.name, msg.err))
@@ -1473,6 +1478,10 @@ func (m model) updateSelected() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.recreating[name] {
+		m.message = fmt.Sprintf("%s is being recreated. Wait until it finishes.", name)
+		return m, nil
+	}
 	if m.updating == nil {
 		m.updating = map[string]bool{}
 	}
@@ -1483,6 +1492,43 @@ func (m model) updateSelected() (tea.Model, tea.Cmd) {
 		defer cancel()
 		err := m.lifecycle.UpdateWorkspaceImage(ctx, selected)
 		return updateActionMsg{name: name, err: err}
+	}
+}
+
+// recreateSelected removes the selected workspace's container and starts a fresh
+// one, keeping the workspace. Like an update it is gated on agent activity
+// because removing the container interrupts active work.
+func (m model) recreateSelected() (tea.Model, tea.Cmd) {
+	selected, ok := m.selectedWorkspace()
+	if !ok {
+		m.message = "Recreate requires a selected workspace."
+		return m, nil
+	}
+	if m.lifecycleErr != "" {
+		m.showError("Recreate Container", "Recreate failed: "+m.lifecycleErr)
+		return m, nil
+	}
+
+	name := selected.Manifest.Name
+	if m.updating[name] || m.recreating[name] {
+		m.message = fmt.Sprintf("%s is already being replaced. Wait until it finishes.", name)
+		return m, nil
+	}
+	switch m.statuses[name].Activity {
+	case workspace.ActivityWorking, workspace.ActivityWaiting:
+		m.message = fmt.Sprintf("Cannot recreate %s while a task is running. Wait until it is idle.", name)
+		return m, nil
+	}
+
+	if m.recreating == nil {
+		m.recreating = map[string]bool{}
+	}
+	m.recreating[name] = true
+	m.message = "Recreating the container for " + name + " (the workspace is kept)..."
+	return m, func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		return lifecycleActionMsg{action: "Recreate", name: name, err: m.lifecycle.RecreateContainer(ctx, selected)}
 	}
 }
 
@@ -1531,6 +1577,8 @@ func (m model) executeCommandName(command string) (tea.Model, tea.Cmd) {
 		return m.editSelected()
 	case "update":
 		return m.updateSelected()
+	case "recreate":
+		return m.recreateSelected()
 	default:
 		m.message = fmt.Sprintf("Unknown command %q. Press ? for help.", command)
 	}
@@ -1792,6 +1840,7 @@ func (m model) renderMenu() string {
 		{"l", "Logs"},
 		{"e", "Edit"},
 		{"u", "Update base image"},
+		{"r", "Recreate container"},
 		{"c", "Create"},
 		{"^d", "Delete"},
 		{"q", "Quit"},
@@ -2044,6 +2093,7 @@ func (m model) renderHelp() string {
 		{"l", "view session logs"},
 		{"e", "edit"},
 		{"u", "update workspace base image"},
+		{"r", "recreate container (keeps the workspace)"},
 		{"c", "create"},
 		{"^d", "delete"},
 		{"q / ^c", "quit"},
@@ -2616,6 +2666,9 @@ func (m model) runtimeStatus() string {
 func (m model) workspaceStatus(ws workspace.Summary) (string, lipgloss.Color) {
 	if m.updating[ws.Manifest.Name] {
 		return "updating", colStarting
+	}
+	if m.recreating[ws.Manifest.Name] {
+		return "recreating", colStarting
 	}
 
 	// A freshly created workspace has no container yet (the runtime reports it

@@ -608,6 +608,22 @@ func (l Lifecycle) Stop(ctx context.Context, summary Summary) error {
 	return l.driver.StopContainer(ctx, name)
 }
 
+// RecreateContainer removes the workspace container and starts a fresh one from
+// the current workspace image, keeping the workspace itself. The host-mounted
+// home survives, and module reconciliation restores tools installed into the
+// disposable container layer. It is the recovery path for a container left in a
+// broken state, e.g. after an interrupted update.
+func (l Lifecycle) RecreateContainer(ctx context.Context, summary Summary) error {
+	slog.Info("recreating workspace container", "workspace", summary.Manifest.Name, "container", summary.Manifest.ContainerName)
+	if err := l.driver.RemoveContainer(ctx, summary.Manifest.ContainerName); err != nil {
+		return fmt.Errorf("remove workspace container: %w", err)
+	}
+	if err := l.ensureStarted(ctx, summary, false); err != nil {
+		return fmt.Errorf("start recreated workspace container: %w", err)
+	}
+	return nil
+}
+
 // UpdateWorkspaceImage refreshes a workspace's configured base image, rebuilds
 // its workspace image without cache, and replaces its container. The host-mounted
 // home remains intact, and module reconciliation restores tools that modules

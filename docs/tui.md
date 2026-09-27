@@ -40,6 +40,7 @@ general command line. The available views (*kinds*) are:
 | `l` | View the latest OpenCode session's input/output transcript |
 | `e` | **Edit** the workspace configuration and modules |
 | `u` | **Update** the workspace base image and replace its container |
+| `r` | **Recreate** the container: remove it and start a fresh one, keeping the workspace (home, sessions, and modules) |
 | `c` | **Create** a workspace |
 | `^d` | **Delete** the workspace |
 | `q` / `^c` | Quit |

@@ -734,3 +734,40 @@ func TestVersionIsNewer(t *testing.T) {
 		}
 	}
 }
+
+func TestRecreateRefusedWhileAgentIsWorking(t *testing.T) {
+	alpha := workspace.Summary{Manifest: workspace.Manifest{Name: "alpha"}}
+	m := model{
+		workspaces: []workspace.Summary{alpha},
+		statuses:   map[string]workspace.Status{"alpha": {Container: runtime.StatusRunning, Activity: workspace.ActivityWorking}},
+	}
+	updated, cmd := m.executeShortcut("r")
+	next := updated.(model)
+	if cmd != nil || next.recreating["alpha"] {
+		t.Fatal("recreate should be refused while the agent is working")
+	}
+	if !strings.Contains(next.message, "Cannot recreate alpha") {
+		t.Fatalf("message = %q", next.message)
+	}
+}
+
+func TestRecreateMarksWorkspaceUntilDone(t *testing.T) {
+	alpha := workspace.Summary{Manifest: workspace.Manifest{Name: "alpha"}}
+	m := model{
+		workspaces: []workspace.Summary{alpha},
+		statuses:   map[string]workspace.Status{"alpha": {Container: runtime.StatusExited}},
+	}
+	updated, cmd := m.executeShortcut("r")
+	next := updated.(model)
+	if cmd == nil || !next.recreating["alpha"] {
+		t.Fatal("recreate should start for an idle workspace")
+	}
+	if got, _ := next.workspaceStatus(alpha); got != "recreating" {
+		t.Fatalf("status while recreating = %q, want recreating", got)
+	}
+
+	updated, _ = next.Update(lifecycleActionMsg{action: "Recreate", name: "alpha"})
+	if updated.(model).recreating["alpha"] {
+		t.Fatal("recreating flag should clear once the action completes")
+	}
+}
