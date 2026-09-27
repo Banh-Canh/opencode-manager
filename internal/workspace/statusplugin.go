@@ -171,6 +171,9 @@ func readWorkspaceActivity(homeDir string, running, deepSeekEnabled, claudeEnabl
 		return activity, pending
 	}
 	claudeActivity, claudePending, ok := readClaudeActivity(homeDir, time.Now())
+	if ok && activity == ActivityWaiting && claudeActivity == ActivityWaiting {
+		return ActivityWaiting, pending + claudePending
+	}
 	if ok && activityPriority(claudeActivity) > activityPriority(activity) {
 		return claudeActivity, claudePending
 	}
@@ -240,6 +243,9 @@ func readOpenCodeDeepSeekActivity(homeDir string, running, deepSeekEnabled bool)
 		return openCodeActivity, openCodePending
 	}
 	deepSeekActivity, deepSeekPending := readStatusActivity(homeDir, deepSeekStatusFileRelPath, running, false)
+	if openCodeActivity == ActivityWaiting && deepSeekActivity == ActivityWaiting {
+		return ActivityWaiting, openCodePending + deepSeekPending
+	}
 	if deepSeekActivity == ActivityUnknown && running {
 		return ActivityUnknown, deepSeekPending
 	}

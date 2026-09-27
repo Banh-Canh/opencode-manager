@@ -147,6 +147,38 @@ func TestReadWorkspaceActivityClaudeWithoutOpenCode(t *testing.T) {
 	}
 }
 
+func TestReadWorkspaceActivityAggregatesWaitingRuntimes(t *testing.T) {
+	for _, tc := range []struct {
+		name                           string
+		openCode, deepSeek             int
+		deepSeekEnabled, claudeEnabled bool
+		want                           int
+	}{
+		{"OpenCode and Claude", 2, 0, false, true, 4},
+		{"DeepSeek and Claude", 0, 3, true, true, 5},
+		{"all runtimes", 2, 3, true, true, 7},
+		{"Claude disabled", 2, 3, true, false, 5},
+		{"DeepSeek disabled", 2, 3, false, true, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			for path, pending := range map[string]int{statusFileRelPath: tc.openCode, deepSeekStatusFileRelPath: tc.deepSeek} {
+				activity := "idle"
+				if pending > 0 {
+					activity = "needs-approval"
+				}
+				writeStatusAt(t, home, path, `{"activity":"`+activity+`","pendingApproval":`+strconv.Itoa(pending)+`,"updatedAt":"`+time.Now().UTC().Format(time.RFC3339)+`"}`)
+			}
+			writeClaudeSession(t, home, "a", "needs-approval", 1, 0)
+			writeClaudeSession(t, home, "b", "needs-approval", 1, 0)
+			writeClaudeSession(t, home, "stale", "needs-approval", 9, time.Minute)
+			if act, pending := readWorkspaceActivity(home, true, tc.deepSeekEnabled, tc.claudeEnabled); act != ActivityWaiting || pending != tc.want {
+				t.Fatalf("activity = %q,%d, want waiting,%d", act, pending, tc.want)
+			}
+		})
+	}
+}
+
 func TestReadClaudeActivityAggregatesLiveSessions(t *testing.T) {
 	home := t.TempDir()
 	now := time.Now()
