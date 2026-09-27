@@ -658,3 +658,18 @@ func TestIsMissingResourceOutputRecognizesPodmanMissingImage(t *testing.T) {
 		t.Fatalf("expected Podman missing image output to be recognized")
 	}
 }
+
+func TestParseContainerStatuses(t *testing.T) {
+	output := []byte("ocm-alpha\trunning\nocm-beta\tExited\n\nbroken line\nocm-gamma,alias\tcreated\nocm-delta\t\n")
+	got := parseContainerStatuses(output)
+	want := map[string]string{
+		"ocm-alpha": StatusRunning,
+		"ocm-beta":  StatusExited,
+		"ocm-gamma": StatusCreated,
+		"alias":     StatusCreated,
+		"ocm-delta": StatusUnknown,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseContainerStatuses = %#v, want %#v", got, want)
+	}
+}
