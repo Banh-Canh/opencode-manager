@@ -956,8 +956,8 @@ func openCodeSessionCommand() []string {
 	return args
 }
 
-// TokenUsage is a synthesis of OpenCode token usage for a workspace, as
-// reported by tokscale running inside the workspace container.
+// TokenUsage combines OpenCode usage reported by tokscale with DSH usage
+// observed by the bundled dsh-tui client.
 type TokenUsage struct {
 	TotalTokens int64
 	TotalCost   float64
@@ -1012,10 +1012,11 @@ func (l Lifecycle) TokenUsage(ctx context.Context, summary Summary) (TokenUsage,
 		return TokenUsage{}, err
 	}
 
+	dshTokens, dshMessages := readDeepSeekUsage(summary.Manifest.HomeDir)
 	return TokenUsage{
-		TotalTokens:    total.tokens,
+		TotalTokens:    total.tokens + dshTokens,
 		TotalCost:      total.cost,
-		TotalMsgs:      total.msgs,
+		TotalMsgs:      total.msgs + dshMessages,
 		TotalInput:     total.input,
 		TotalOutput:    total.output,
 		TotalCacheRead: total.cacheRead,

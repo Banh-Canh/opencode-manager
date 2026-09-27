@@ -169,6 +169,23 @@ func (r Registry) CreateWithOptions(name string, options CreateOptions) (CreateR
 	return CreateResult{Manifest: manifest, Path: workspacePath}, nil
 }
 
+func (r Registry) SetDefaultRuntime(summary Summary, runtimeName string) (Manifest, error) {
+	if summary.Path == "" {
+		return Manifest{}, fmt.Errorf("workspace path is required")
+	}
+	path := filepath.Join(summary.Path, ManifestFile)
+	manifest, err := LoadManifest(path)
+	if err != nil {
+		return Manifest{}, err
+	}
+	manifest.DefaultRuntime = runtimeName
+	manifest.UpdatedAt = time.Now().UTC()
+	if err := SaveManifest(path, manifest); err != nil {
+		return Manifest{}, err
+	}
+	return manifest, nil
+}
+
 func (r Registry) Delete(summary Summary) error {
 	if summary.Path == "" {
 		return fmt.Errorf("workspace path is required")

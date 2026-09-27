@@ -58,7 +58,8 @@ export function App(props: AppProps) {
   const [references, setReferences] = createSignal<ReferenceCandidate[]>([])
   const [remoteCommands, setRemoteCommands] = createSignal<readonly CommandDescriptor[]>(props.initial.commands)
   const [commandOptions, setCommandOptions] = createSignal<readonly CommandCandidate[]>(commandCandidates(props.initial.commands, commandFlags))
-  const [running, setRunning] = createSignal(false)
+  const initialSession = props.initial.sessions.find(item => item.sessionId === props.initial.sessionId)
+  const [running, setRunning] = createSignal(initialSession?.running ?? false)
   const [compacting, setCompacting] = createSignal<string>()
   const [status, setStatus] = createSignal<"connected" | "reconnecting">("connected")
   const [error, setError] = createSignal<string>()
@@ -93,7 +94,12 @@ export function App(props: AppProps) {
     )
   })
   const refreshSessions = async () => {
-    try { setSessions(await props.gateway.listSessions()) }
+    try {
+      const next = await props.gateway.listSessions()
+      setSessions(next)
+      const active = next.find(item => item.sessionId === sessionId())
+      if (active) setRunning(active.running)
+    }
     catch (cause) { setError(`Failed to refresh sessions: ${String(cause)}`) }
   }
   const refreshSubagents = async (parentSessionId = sessionId()) => {
@@ -227,7 +233,11 @@ export function App(props: AppProps) {
             }
             if (event.type === "assistant/chunk") {
               const usage = ((event.data as Record<string, unknown> | undefined)?.chunk as Record<string, unknown> | undefined)?.usage as Record<string, unknown> | undefined
-              if (usage) setTokens(Number(usage.totalTokens ?? 0))
+              if (usage) {
+                const total = Number(usage.totalTokens ?? 0)
+                setTokens(total)
+                props.statusReporter.recordUsage(total)
+              }
             }
             if (event.type === "request/header") {
               const model = ((event.data as Record<string, unknown> | undefined)?.header as Record<string, unknown> | undefined)?.config as ModelSelection | undefined

@@ -54,7 +54,21 @@ type statusReport struct {
 	Activity        string    `json:"activity"`
 	PendingApproval int       `json:"pendingApproval"`
 	Sessions        int       `json:"sessions"`
+	TotalTokens     int64     `json:"totalTokens"`
+	MessageCount    int       `json:"messageCount"`
 	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+func readDeepSeekUsage(homeDir string) (int64, int) {
+	data, err := os.ReadFile(filepath.Join(homeDir, deepSeekStatusFileRelPath))
+	if err != nil {
+		return 0, 0
+	}
+	var report statusReport
+	if json.Unmarshal(data, &report) != nil {
+		return 0, 0
+	}
+	return report.TotalTokens, report.MessageCount
 }
 
 // SeedStatusPlugin writes the manager-owned status-reporter plugin into the

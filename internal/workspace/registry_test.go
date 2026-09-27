@@ -144,6 +144,48 @@ func TestCreateWorkspaceWritesLayoutAndManifest(t *testing.T) {
 	}
 }
 
+func TestSetDefaultRuntimePersistsEnabledAgent(t *testing.T) {
+	registry := NewRegistry(testConfig(t))
+	result, err := registry.Create("Demo Workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := Summary{Manifest: result.Manifest, Path: result.Path}
+	updated, err := registry.SetDefaultRuntime(summary, agent.Claude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.DefaultRuntime != agent.Claude {
+		t.Fatalf("default runtime = %q, want %q", updated.DefaultRuntime, agent.Claude)
+	}
+	loaded, err := LoadManifest(filepath.Join(result.Path, ManifestFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.DefaultRuntime != agent.Claude {
+		t.Fatalf("persisted default runtime = %q, want %q", loaded.DefaultRuntime, agent.Claude)
+	}
+}
+
+func TestSetDefaultRuntimeRejectsDisabledAgent(t *testing.T) {
+	registry := NewRegistry(testConfig(t))
+	result, err := registry.Create("Demo Workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = registry.SetDefaultRuntime(Summary{Manifest: result.Manifest, Path: result.Path}, agent.DeepSeek)
+	if err == nil {
+		t.Fatal("SetDefaultRuntime returned nil error for disabled DeepSeek")
+	}
+	loaded, loadErr := LoadManifest(filepath.Join(result.Path, ManifestFile))
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if loaded.EffectiveDefaultRuntime() != agent.OpenCode {
+		t.Fatalf("default runtime changed after failed update: %q", loaded.EffectiveDefaultRuntime())
+	}
+}
+
 func TestDeleteWorkspaceRemovesWorkspaceDirectory(t *testing.T) {
 	registry := NewRegistry(testConfig(t))
 	result, err := registry.Create("Demo Workspace")
