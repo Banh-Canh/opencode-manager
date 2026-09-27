@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -234,7 +235,7 @@ func TestBaseDockerfileInstallsRequiredTools(t *testing.T) {
 		"COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/",
 		"git", "ripgrep", "jq", "nodejs", "npm",
 		"${EXTRA_PACKAGES}",
-		"RUN ${EXTRA_COMMANDS}",
+		`RUN sh -c "${EXTRA_COMMANDS}"`,
 		"git --version && rg --version && jq --version && npx --version && uvx --version",
 		"command -v opencode >/dev/null 2>&1 || npm install -g opencode-ai",
 		"command -v claude >/dev/null 2>&1 || npm install -g @anthropic-ai/claude-code",
@@ -268,7 +269,7 @@ func TestBaseDockerfileInstallsRequiredTools(t *testing.T) {
 
 	// Package install -> user commands -> OpenCode install, in that order.
 	packages := strings.Index(content, "apt-get update && apt-get install")
-	command := strings.Index(content, "RUN ${EXTRA_COMMANDS}")
+	command := strings.Index(content, `RUN sh -c "${EXTRA_COMMANDS}"`)
 	opencodeInstall := strings.Index(content, "npm install -g opencode-ai")
 	if packages == -1 || command == -1 || opencodeInstall == -1 || !(packages < command && command < opencodeInstall) {
 		t.Fatalf("expected user commands after package install and before OpenCode install:\n%s", content)
@@ -328,12 +329,62 @@ func TestWorkspaceDockerfileRefreshesManagerScripts(t *testing.T) {
 	}
 }
 
+// TestExtraCommandsRunAsShellCommandLine runs each Dockerfile's EXTRA_COMMANDS
+// step the way a shell-form RUN does (sh -c "<instruction>", build args in the
+// environment) and checks that operators and quoting in baseImage.commands take
+// effect instead of reaching the first command as arguments.
+func TestExtraCommandsRunAsShellCommandLine(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	for _, name := range []string{baseDockerfile, overlayDockerfile} {
+		t.Run(name, func(t *testing.T) {
+			var instruction string
+			for _, line := range strings.Split(readBuildFile(t, name), "\n") {
+				if strings.HasPrefix(line, "RUN ") && strings.Contains(line, "EXTRA_COMMANDS") {
+					instruction = strings.TrimPrefix(line, "RUN ")
+				}
+			}
+			if instruction == "" {
+				t.Fatalf("%s has no EXTRA_COMMANDS RUN step", name)
+			}
+
+			dir := t.TempDir()
+			out := filepath.Join(dir, "sub", "out")
+			_, args := baseBuildArgs(BaseBuildSpec{Commands: []string{
+				"mkdir -p " + filepath.Join(dir, "sub"),
+				"printf '%s\\n' 'a b' > " + out,
+				"echo --flag | cat >> " + out,
+			}})
+			var commands string
+			for _, arg := range args {
+				if value, ok := strings.CutPrefix(arg, "EXTRA_COMMANDS="); ok {
+					commands = value
+				}
+			}
+
+			cmd := exec.Command("sh", "-c", instruction)
+			cmd.Env = append(os.Environ(), "EXTRA_COMMANDS="+commands)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("RUN %s failed: %v\n%s", instruction, err, output)
+			}
+			got, err := os.ReadFile(out)
+			if err != nil {
+				t.Fatalf("read output: %v", err)
+			}
+			if want := "a b\n--flag\n"; string(got) != want {
+				t.Fatalf("output = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestOverlayDockerfileOnlyAddsExtras(t *testing.T) {
 	content := readBuildFile(t, overlayDockerfile)
 	for _, want := range []string{
 		"FROM ${BASE_IMAGE}",
 		"${EXTRA_PACKAGES}",
-		"RUN ${EXTRA_COMMANDS}",
+		`RUN sh -c "${EXTRA_COMMANDS}"`,
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("overlay Dockerfile missing %q:\n%s", want, content)

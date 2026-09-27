@@ -47,7 +47,11 @@ RUN set -eux; \
 
 # User-provided baseImage.commands, run after package installation (a no-op ":"
 # by default).
-RUN ${EXTRA_COMMANDS}
+# baseImage.commands arrive joined with " && " in one build arg. Expanding it
+# directly (RUN ${EXTRA_COMMANDS}) only word-splits it, so "&&", pipes,
+# redirects and quotes would reach the first command as plain arguments; sh -c
+# parses it as a command line.
+RUN sh -c "${EXTRA_COMMANDS}"
 
 RUN git --version && rg --version && jq --version && npx --version && uvx --version
 
