@@ -45,6 +45,12 @@ type model struct {
 	lifecycleErr     string
 	workspaces       []workspace.Summary
 	statuses         map[string]workspace.Status
+	// statusLoading is set while a tick-driven status refresh runs, so a slow
+	// runtime (busy building or pulling) does not pile up overlapping refreshes.
+	statusLoading bool
+	// statusFailures counts consecutive failed status reads per workspace; the
+	// last good status is kept until statusErrorThreshold is reached.
+	statusFailures   map[string]int
 	statusRecency    map[string]uint64
 	statusSequence   uint64
 	workspacePos     int
@@ -429,6 +435,11 @@ type tickMsg time.Time
 
 const refreshInterval = 2 * time.Second
 
+// statusErrorThreshold is how many consecutive failed status reads a workspace
+// tolerates before the dashboard reports it as errored. A single read can time
+// out while the runtime holds its locks for an update on another container.
+const statusErrorThreshold = 3
+
 func tickCmd() tea.Cmd {
 	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg {
 		return tickMsg(t)
@@ -558,11 +569,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.runtimeError = ""
 		}
 	case statusListMsg:
+		m.statusLoading = false
+		if m.statusFailures == nil {
+			m.statusFailures = map[string]int{}
+		}
 		next := make(map[string]workspace.Status, len(msg.statuses))
 		ring := false
 		var cmds []tea.Cmd
 		for _, status := range msg.statuses {
 			name := status.Workspace.Manifest.Name
+			if status.Error != "" {
+				m.statusFailures[name]++
+				if prev, ok := m.statuses[name]; ok && prev.Error == "" && m.statusFailures[name] < statusErrorThreshold {
+					slog.Debug("keeping last workspace status after a failed read", "workspace", name, "error", status.Error)
+					prev.Workspace = status.Workspace
+					next[name] = prev
+					continue
+				}
+			} else {
+				delete(m.statusFailures, name)
+			}
 			if prev, ok := m.statuses[name]; ok && statusChanged(prev, status) {
 				if m.statusRecency == nil {
 					m.statusRecency = map[string]uint64{}
@@ -604,6 +630,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmds...)
 		}
 	case tickMsg:
+		if m.statusLoading {
+			return m, tickCmd()
+		}
+		m.statusLoading = true
 		return m, tea.Batch(m.loadStatuses, tickCmd())
 	case baseSpinnerTickMsg:
 		// Stop animating (and stop rescheduling) once the build settles either

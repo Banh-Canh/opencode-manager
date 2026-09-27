@@ -5,6 +5,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -371,6 +372,50 @@ func (d CLIDriver) ContainerStatus(ctx context.Context, name string) (string, er
 
 	slog.Debug("container status", "container", name, "status", status)
 	return status, nil
+}
+
+// ContainerStatusLister is implemented by drivers that can report the status of
+// many containers in one runtime call. Dashboards poll every workspace on a
+// short interval; one `ps` instead of an `inspect` per container keeps that poll
+// cheap while builds and pulls hold the runtime's storage locks.
+type ContainerStatusLister interface {
+	ContainerStatuses(context.Context) (map[string]string, error)
+}
+
+// ContainerStatuses returns the status of every container known to the runtime,
+// keyed by name. A container absent from the map does not exist.
+func (d CLIDriver) ContainerStatuses(ctx context.Context) (map[string]string, error) {
+	cmd := exec.CommandContext(ctx, d.binary, "ps", "--all", "--no-trunc", "--format", "{{.Names}}\t{{.State}}")
+	output, err := cmd.Output()
+	if err != nil {
+		detail := ""
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			detail = strings.TrimSpace(string(exitErr.Stderr))
+		}
+		return nil, fmt.Errorf("list containers: %w: %s", err, detail)
+	}
+	return parseContainerStatuses(output), nil
+}
+
+func parseContainerStatuses(output []byte) map[string]string {
+	statuses := make(map[string]string)
+	for _, line := range strings.Split(string(output), "\n") {
+		names, state, ok := strings.Cut(strings.TrimRight(line, "\r"), "\t")
+		if !ok {
+			continue
+		}
+		state = strings.ToLower(strings.TrimSpace(state))
+		if state == "" {
+			state = StatusUnknown
+		}
+		for _, name := range strings.Split(names, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				statuses[name] = state
+			}
+		}
+	}
+	return statuses
 }
 
 // ContainerRuntimeConfig inspects an existing container and returns its network

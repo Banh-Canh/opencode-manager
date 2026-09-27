@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -263,4 +264,47 @@ func testCACertificate(t *testing.T) []byte {
 	}
 
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate})
+}
+
+type listingStatusDriver struct {
+	*fakeDriver
+	listed    map[string]string
+	listErr   error
+	inspected int
+}
+
+func (d *listingStatusDriver) ContainerStatuses(context.Context) (map[string]string, error) {
+	return d.listed, d.listErr
+}
+
+func (d *listingStatusDriver) ContainerStatus(context.Context, string) (string, error) {
+	d.inspected++
+	return runtime.StatusUnknown, errors.New("inspect should not be used")
+}
+
+func TestStatusesUsesOneContainerListing(t *testing.T) {
+	driver := &listingStatusDriver{fakeDriver: &fakeDriver{}, listed: map[string]string{"ocm-alpha": runtime.StatusRunning}}
+	l := Lifecycle{driver: driver}
+	workspaces := []Summary{
+		{Manifest: Manifest{Name: "alpha", ContainerName: "ocm-alpha"}},
+		{Manifest: Manifest{Name: "beta", ContainerName: "ocm-beta"}},
+	}
+
+	statuses := l.Statuses(context.Background(), workspaces)
+	if driver.inspected != 0 {
+		t.Fatalf("inspected %d containers, want a single listing", driver.inspected)
+	}
+	if statuses[0].Container != runtime.StatusRunning || statuses[0].Error != "" {
+		t.Fatalf("alpha status = %#v, want running", statuses[0])
+	}
+	if statuses[1].Container != runtime.StatusMissing || statuses[1].Error != "" {
+		t.Fatalf("beta status = %#v, want missing", statuses[1])
+	}
+
+	driver.listErr = errors.New("context deadline exceeded")
+	for _, status := range l.Statuses(context.Background(), workspaces) {
+		if status.Container != runtime.StatusUnknown || status.Error == "" {
+			t.Fatalf("status after failed listing = %#v, want unknown with error", status)
+		}
+	}
 }

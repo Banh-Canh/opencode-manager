@@ -144,8 +144,31 @@ func (l Lifecycle) ensurePulled(ctx context.Context, ref string) error {
 
 func (l Lifecycle) Statuses(ctx context.Context, workspaces []Summary) []Status {
 	statuses := make([]Status, 0, len(workspaces))
+
+	// Prefer one listing for every workspace: an inspect per container, run
+	// sequentially under one deadline, stalls behind the runtime's storage locks
+	// while an update builds or pulls and then fails for every workspace.
+	var listed map[string]string
+	var listErr error
+	lister, batched := l.driver.(runtime.ContainerStatusLister)
+	if batched {
+		listed, listErr = lister.ContainerStatuses(ctx)
+	}
+
 	for _, ws := range workspaces {
-		containerStatus, err := l.driver.ContainerStatus(ctx, ws.Manifest.ContainerName)
+		var containerStatus string
+		var err error
+		switch {
+		case !batched:
+			containerStatus, err = l.driver.ContainerStatus(ctx, ws.Manifest.ContainerName)
+		case listErr != nil:
+			containerStatus, err = runtime.StatusUnknown, listErr
+		default:
+			var ok bool
+			if containerStatus, ok = listed[ws.Manifest.ContainerName]; !ok {
+				containerStatus = runtime.StatusMissing
+			}
+		}
 		status := Status{Workspace: ws, Container: containerStatus}
 		if err != nil {
 			status.Error = err.Error()

@@ -734,3 +734,47 @@ func TestVersionIsNewer(t *testing.T) {
 		}
 	}
 }
+
+func TestStatusKeepsLastGoodStateAcrossTransientFailures(t *testing.T) {
+	alpha := workspace.Summary{Manifest: workspace.Manifest{Name: "alpha"}}
+	m := model{
+		workspaces: []workspace.Summary{alpha},
+		statuses:   map[string]workspace.Status{},
+		tokens:     map[string]tokenState{},
+	}
+	good := statusListMsg{statuses: []workspace.Status{{Workspace: alpha, Container: runtime.StatusRunning, Activity: workspace.ActivitySleeping}}}
+	failed := statusListMsg{statuses: []workspace.Status{{Workspace: alpha, Container: runtime.StatusUnknown, Error: "context deadline exceeded"}}}
+
+	updated, _ := m.Update(good)
+	next := updated.(model)
+	for i := 1; i < statusErrorThreshold; i++ {
+		updated, _ = next.Update(failed)
+		next = updated.(model)
+		if got, _ := next.workspaceStatus(alpha); got != "running" {
+			t.Fatalf("status after %d failed reads = %q, want running", i, got)
+		}
+	}
+
+	updated, _ = next.Update(failed)
+	next = updated.(model)
+	if got, _ := next.workspaceStatus(alpha); got != "error" {
+		t.Fatalf("status after %d failed reads = %q, want error", statusErrorThreshold, got)
+	}
+
+	updated, _ = next.Update(good)
+	next = updated.(model)
+	if got, _ := next.workspaceStatus(alpha); got != "running" || next.statusFailures["alpha"] != 0 {
+		t.Fatalf("status after recovery = %q (failures %d), want running", got, next.statusFailures["alpha"])
+	}
+}
+
+func TestTickSkipsStatusRefreshWhileOneIsRunning(t *testing.T) {
+	m := model{statusLoading: true}
+	updated, cmd := m.Update(tickMsg(time.Now()))
+	if !updated.(model).statusLoading || cmd == nil {
+		t.Fatal("tick during a running refresh should only reschedule the tick")
+	}
+	if _, ok := cmd().(tickMsg); !ok {
+		t.Fatal("tick during a running refresh should not start another status load")
+	}
+}
