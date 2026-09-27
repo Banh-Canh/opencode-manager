@@ -38,9 +38,33 @@ workspacePostCreateCommands:
 workspacePreDeleteCommands:
   - git push
 preserveData: false
+selfImprovement:
+  enabled: false
+  agent: opencode
 ```
 
 ## Options
+
+### `selfImprovement`
+
+Enables a private workspace for analyzing usage and proposing configuration and
+instruction improvements. Default: disabled. `agent` is optional and only
+`opencode` is supported.
+
+```yaml
+selfImprovement:
+  enabled: true
+  agent: opencode
+```
+
+The manager creates its persistent layout automatically on the next launch.
+Open it with `ocm improve` or `i` on the dashboard. It is excluded from workspace
+lists and selectors. Its container starts on first access; analysis starts only
+when requested. Disabling the option prevents subsequent access and preserves
+the instance's data; it does not stop an already-running container.
+
+See [Self improvement](self-improvement.md) for mounts, commands, session coverage,
+and analysis state.
 
 ### `workspaceRoot`
 

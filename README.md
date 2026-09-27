@@ -99,6 +99,7 @@ directory on your `PATH`.
 
 ```sh
 ocm                              # launch the TUI dashboard
+ocm improve                      # open the opt-in private self-improvement workspace
 ocm workspaces list              # list workspaces (alias: ocm ws ls)
 ocm workspaces attach <ws>       # attach to a workspace session
 ocm workspaces create <name> --template backend --start
@@ -148,6 +149,16 @@ recipe for "this kind of project needs AWS + Git + Kubernetes, set up like so".
   when you have no templates yet.
 
 Templates are stored as `<workspaceRoot>/templates/<name>.yaml`.
+
+### Harness self improvement
+
+Enable `selfImprovement.enabled: true` in `config.yaml`, then run `ocm improve`
+or press `i` on the dashboard. This private OpenCode workspace is excluded from
+workspace lists and can access the manager configuration and all workspace homes.
+Its `/analyze` command delegates incremental OpenCode session analysis to
+subagents and proposes evidence-based configuration/instruction diffs. Date and
+workspace filters, persistent reports, and proposal tracking support repeated
+analyses. See the [self-improvement guide](docs/self-improvement.md).
 
 ## Configuration
 

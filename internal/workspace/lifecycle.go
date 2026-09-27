@@ -202,7 +202,9 @@ func (l Lifecycle) ensureStarted(ctx context.Context, summary Summary, refreshBa
 
 	// Run the one-shot post-create commands the first time this workspace starts,
 	// after modules are in place. Best-effort: failures are logged, not fatal.
-	l.runPostCreateHook(ctx, summary)
+	if !l.isImprovement(summary) {
+		l.runPostCreateHook(ctx, summary)
+	}
 
 	return nil
 }
@@ -244,6 +246,14 @@ func (l Lifecycle) provision(ctx context.Context, summary Summary) (string, runt
 }
 
 func (l Lifecycle) provisionWithBaseRefresh(ctx context.Context, summary Summary, refreshBase bool) (string, runtime.ContainerSpec, error) {
+	if l.isImprovement(summary) {
+		if !l.cfg.SelfImprovement.Enabled {
+			return runtime.StatusUnknown, runtime.ContainerSpec{}, fmt.Errorf("self-improvement is disabled")
+		}
+		if err := seedImprovementAssets(summary.Manifest.HomeDir); err != nil {
+			return runtime.StatusUnknown, runtime.ContainerSpec{}, err
+		}
+	}
 	if err := l.driver.Available(ctx); err != nil {
 		return runtime.StatusUnknown, runtime.ContainerSpec{}, err
 	}
@@ -315,6 +325,20 @@ func (l Lifecycle) provisionWithBaseRefresh(ctx context.Context, summary Summary
 	// scripts are runnable inside the container.
 	mounts = append(mounts, moduleMounts(l.cfg)...)
 	mounts = append(mounts, extraMounts(l.cfg)...)
+	if l.isImprovement(summary) {
+		internalMounts, err := l.improvementMounts()
+		if err != nil {
+			return runtime.StatusUnknown, runtime.ContainerSpec{}, err
+		}
+		for _, mount := range mounts {
+			for _, internal := range internalMounts {
+				if mount.Target == internal.Target || strings.HasPrefix(internal.Target, strings.TrimRight(mount.Target, "/")+"/") || strings.HasPrefix(mount.Target, internal.Target+"/") {
+					return runtime.StatusUnknown, runtime.ContainerSpec{}, fmt.Errorf("mount target %q conflicts with self-improvement mounts", mount.Target)
+				}
+			}
+		}
+		mounts = append(mounts, internalMounts...)
+	}
 	if l.cfg.UseLocalOpenCodeAuth {
 		if err := os.MkdirAll(filepath.Join(manifest.HomeDir, ".local", "share", "opencode"), 0o700); err != nil {
 			return runtime.StatusUnknown, runtime.ContainerSpec{}, fmt.Errorf("create workspace OpenCode data directory: %w", err)

@@ -9,6 +9,7 @@ the commands follow a `kubectl`-style `ocm <resource> <verb>` shape.
 
 ```sh
 ocm                              # launch the TUI dashboard
+ocm improve                      # open the private self-improvement workspace
 ocm workspaces list              # manage workspaces
 ocm templates list               # inspect templates
 ocm modules list                 # inspect the module catalog
@@ -33,6 +34,10 @@ Diagnostic logs go to a file, not the terminal, so CLI output stays clean — se
 [Configuration → Logging](configuration.md#logging).
 
 ## Workspaces (`ocm workspaces`, alias `ws`)
+
+The internal self-improvement workspace is excluded from these commands. Access
+it directly with `ocm improve` after enabling `selfImprovement.enabled` in
+`config.yaml`. See [Self improvement](self-improvement.md).
 
 | Command | Description |
 | --- | --- |

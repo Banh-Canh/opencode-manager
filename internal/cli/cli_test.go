@@ -91,6 +91,25 @@ func TestUnknownCommandIsAnError(t *testing.T) {
 	}
 }
 
+func TestImproveDedicatedAccess(t *testing.T) {
+	cfg := testConfig(t)
+	if _, _, err := run(t, cfg, "improve"); err == nil || !strings.Contains(err.Error(), "selfImprovement.enabled") {
+		t.Fatalf("disabled improve error = %v", err)
+	}
+	cfg.SelfImprovement.Enabled = true
+	internal, err := workspace.NewRegistry(cfg).EnsureImprovement()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := findWorkspace(cfg, internal.Manifest.Name); err == nil {
+		t.Fatal("internal workspace must not be reachable via ordinary workspace commands")
+	}
+	out, _, err := run(t, cfg, "workspaces", "list", "-o", "json")
+	if err != nil || strings.Contains(out, internal.Manifest.ContainerName) {
+		t.Fatalf("internal workspace leaked into CLI list: %s, %v", out, err)
+	}
+}
+
 func TestWorkspacesCreateAndList(t *testing.T) {
 	cfg := testConfig(t)
 

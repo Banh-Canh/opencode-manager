@@ -210,6 +210,7 @@ type action struct {
 }
 
 var actions = []action{
+	{Key: "i", Cmd: "improve", Desc: "Self improvement"},
 	{Key: "", Cmd: "attach", Desc: "Attach"},
 	{Key: "ctrl+a", Cmd: "attach-pick", Desc: "Attach with…"},
 	{Key: "s", Cmd: "shell", Desc: "Shell"},
@@ -1512,6 +1513,22 @@ func (m model) executeCommandName(command string) (tea.Model, tea.Cmd) {
 		return m.attachSelected()
 	case "attach-pick":
 		return m.openAttachPicker()
+	case "improve":
+		if m.lifecycleErr != "" {
+			m.showError("Self improvement", m.lifecycleErr)
+			return m, nil
+		}
+		m.message = "Preparing self-improvement workspace..."
+		return m, func() tea.Msg {
+			summary, err := m.registry.EnsureImprovement()
+			if err != nil {
+				return attachReadyMsg{noun: "Self improvement", err: err}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+			cmd, err := m.lifecycle.AttachRuntime(ctx, summary, agent.OpenCode)
+			return attachReadyMsg{noun: "Self improvement", name: summary.Manifest.Name, cmd: cmd, err: err}
+		}
 	case "create":
 		m.createMode = true
 		m.createName = ""
@@ -1786,6 +1803,7 @@ func (m model) renderMenu() string {
 		{"?", "Help"},
 		{"↵", "Attach"},
 		{"^a", "Attach with…"},
+		{"i", "Self improvement"},
 		{"s", "Shell"},
 		{"t", "Start/Stop"},
 		{"d", "Describe"},
@@ -2038,6 +2056,7 @@ func (m model) renderHelp() string {
 		{"^f / ^b", "page down / up"},
 		{"↵", "attach to workspace (default runtime)"},
 		{"^a", "pick the agent, then attach"},
+		{"i", "open private self-improvement workspace"},
 		{"s", "shell into container"},
 		{"t", "start / stop container"},
 		{"d", "describe"},
