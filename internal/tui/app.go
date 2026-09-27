@@ -200,8 +200,11 @@ type model struct {
 type tokenState struct {
 	loading bool
 	loaded  bool
-	err     string
-	usage   workspace.TokenUsage
+	// stale marks totals whose refresh was skipped while the container was
+	// being changed; they are fetched again once it settles.
+	stale bool
+	err   string
+	usage workspace.TokenUsage
 }
 
 // action mirrors a k9s menu entry: a hotkey, the command word typed after ":",
@@ -594,9 +597,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				startedRunning := !hadPrev || prev.Container != runtime.StatusRunning
 				finishedWorking := hadPrev && prev.Activity == workspace.ActivityWorking && status.Activity != workspace.ActivityWorking
 				st, tracked := m.tokens[name]
-				if !(tracked && st.loading) && (startedRunning || finishedWorking || !st.loaded) {
-					m.tokens[name] = tokenState{loading: true}
-					cmds = append(cmds, m.fetchTokenUsage(status.Workspace))
+				if !(tracked && st.loading) && (startedRunning || finishedWorking || !st.loaded || st.stale) {
+					if m.containerBusy(name) {
+						// tokscale runs through a runtime exec, which competes for
+						// the locks an update or recreate holds and is cancelled
+						// when it times out. Refresh once the container settles.
+						st.stale = true
+						m.tokens[name] = st
+					} else {
+						m.tokens[name] = tokenState{loading: true}
+						cmds = append(cmds, m.fetchTokenUsage(status.Workspace))
+					}
 				}
 			}
 		}
@@ -2808,6 +2819,12 @@ func (m *model) requestDelete() {
 	m.confirmDelete = true
 }
 
+// containerBusy reports whether the manager is currently changing name's
+// container (provisioning, updating, recreating, or installing modules).
+func (m model) containerBusy(name string) bool {
+	return m.provisioning[name] || m.updating[name] || m.recreating[name] || m.installing[name]
+}
+
 func (m model) describeSelected() (tea.Model, tea.Cmd) {
 	selected, ok := m.selectedWorkspace()
 	if !ok {
@@ -2820,7 +2837,7 @@ func (m model) describeSelected() (tea.Model, tea.Cmd) {
 
 	// Refresh token usage if the container is running; tokscale runs inside it.
 	name := selected.Manifest.Name
-	if m.lifecycleErr == "" && m.isRunning(name) {
+	if m.lifecycleErr == "" && m.isRunning(name) && !m.containerBusy(name) {
 		m.tokens[name] = tokenState{loading: true}
 		return m, m.fetchTokenUsage(selected)
 	}

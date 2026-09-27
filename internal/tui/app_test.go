@@ -829,3 +829,34 @@ func TestRecreateBlocksConflictingActions(t *testing.T) {
 		})
 	}
 }
+
+func TestTokenUsageWaitsWhileContainerIsBusy(t *testing.T) {
+	app := workspace.Summary{Manifest: workspace.Manifest{Name: "app"}}
+	loaded := tokenState{loaded: true, usage: workspace.TokenUsage{TotalInput: 42}}
+	m := model{
+		workspaces: []workspace.Summary{app},
+		statuses:   map[string]workspace.Status{"app": {Workspace: app, Container: runtime.StatusMissing}},
+		tokens:     map[string]tokenState{"app": loaded},
+		updating:   map[string]bool{"app": true},
+	}
+
+	// The container comes back up mid-update: keep the last totals and do not
+	// exec tokscale while the update still holds the runtime.
+	running := statusListMsg{statuses: []workspace.Status{{Workspace: app, Container: runtime.StatusRunning}}}
+	updated, cmd := m.Update(running)
+	next := updated.(model)
+	if cmd != nil {
+		t.Fatal("token usage was fetched while the workspace was updating")
+	}
+	if st := next.tokens["app"]; st.loading || !st.stale || st.usage.TotalInput != 42 {
+		t.Fatalf("token state while busy = %+v, want stale last totals", st)
+	}
+
+	// Once the update is done, the next refresh fetches the skipped totals.
+	delete(next.updating, "app")
+	updated, cmd = next.Update(running)
+	next = updated.(model)
+	if cmd == nil || !next.tokens["app"].loading {
+		t.Fatalf("token usage not refreshed after the update settled: %+v", next.tokens["app"])
+	}
+}

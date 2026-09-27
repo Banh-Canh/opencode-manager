@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNewDriverRejectsUnsupportedRuntime(t *testing.T) {
@@ -556,5 +557,48 @@ func TestIsMissingResourceOutputRecognizesPodmanMissingImage(t *testing.T) {
 
 	if !isMissingResourceOutput(output) {
 		t.Fatalf("expected Podman missing image output to be recognized")
+	}
+}
+
+func TestCancelledRuntimeCommandGetsSIGTERM(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "terminated")
+	started := filepath.Join(dir, "started")
+	// A runtime stand-in that records SIGTERM and exits cleanly; SIGKILL would
+	// leave no marker behind.
+	script := "#!/bin/sh\ntrap 'touch \"" + marker + "\"; exit 143' TERM\ntouch \"" + started + "\"\nwhile :; do sleep 0.05; done\n"
+	binary := filepath.Join(dir, "fake-runtime")
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake runtime: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := CLIDriver{binary: binary}.ContainerStatus(ctx, "demo")
+		done <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("fake runtime never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(runtimeStopGrace):
+		t.Fatal("cancelled runtime command did not return")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("runtime command was not sent SIGTERM on cancel: %v", err)
 	}
 }

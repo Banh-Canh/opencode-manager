@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/mickael-menu/opencode-manager/internal/config"
 )
@@ -237,6 +239,25 @@ func NewDriver(runtimeName string) (Driver, error) {
 	}
 }
 
+// runtimeStopGrace is how long a cancelled runtime command may take to exit
+// after SIGTERM before it is killed.
+const runtimeStopGrace = 10 * time.Second
+
+// command builds a runtime CLI invocation bound to ctx. When ctx is cancelled
+// (usually a dashboard poll timing out behind the runtime's locks) the command
+// gets SIGTERM instead of exec's default SIGKILL: a killed podman cannot
+// release the container locks it holds or record the end of an exec session,
+// which can leave the runtime hanging until it is reset. A command that
+// ignores SIGTERM is still killed once runtimeStopGrace has passed.
+func (d CLIDriver) command(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, d.binary, args...)
+	cmd.Cancel = func() error {
+		return cmd.Process.Signal(syscall.SIGTERM)
+	}
+	cmd.WaitDelay = runtimeStopGrace
+	return cmd
+}
+
 func (d CLIDriver) Name() string {
 	return d.binary
 }
@@ -247,7 +268,7 @@ func (d CLIDriver) Available(ctx context.Context) error {
 		return fmt.Errorf("%s executable not found: %w", d.binary, err)
 	}
 
-	cmd := exec.CommandContext(ctx, d.binary, "version")
+	cmd := d.command(ctx, "version")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		slog.Debug("runtime not available", "runtime", d.binary, "error", err, "output", strings.TrimSpace(string(output)))
 		return fmt.Errorf("%s is not available: %w: %s", d.binary, err, string(output))
@@ -353,7 +374,7 @@ func (d CLIDriver) ContainerStatus(ctx context.Context, name string) (string, er
 		return StatusMissing, fmt.Errorf("container name is required")
 	}
 
-	cmd := exec.CommandContext(ctx, d.binary, "inspect", "-f", "{{.State.Status}}", name)
+	cmd := d.command(ctx, "inspect", "-f", "{{.State.Status}}", name)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if isMissingResourceOutput(output) {
@@ -383,7 +404,7 @@ func (d CLIDriver) ContainerRuntimeConfig(ctx context.Context, name string) (Con
 	}
 
 	const format = `{{json .}}`
-	cmd := exec.CommandContext(ctx, d.binary, "inspect", "-f", format, name)
+	cmd := d.command(ctx, "inspect", "-f", format, name)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return ContainerRuntimeConfig{}, fmt.Errorf("inspect container %q: %w: %s", name, err, strings.TrimSpace(string(output)))
@@ -513,7 +534,7 @@ func (d CLIDriver) ContainerImageID(ctx context.Context, name string) (string, e
 		return "", fmt.Errorf("container name is required")
 	}
 
-	cmd := exec.CommandContext(ctx, d.binary, "inspect", "-f", "{{.Image}}", name)
+	cmd := d.command(ctx, "inspect", "-f", "{{.Image}}", name)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if isMissingResourceOutput(output) {
@@ -533,7 +554,7 @@ func (d CLIDriver) ImageID(ctx context.Context, imageName string) (string, error
 		return "", fmt.Errorf("image name is required")
 	}
 
-	cmd := exec.CommandContext(ctx, d.binary, "image", "inspect", "-f", "{{.Id}}", imageName)
+	cmd := d.command(ctx, "image", "inspect", "-f", "{{.Id}}", imageName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if isMissingResourceOutput(output) {
@@ -557,7 +578,7 @@ func (d CLIDriver) ExecCommand(name string, command []string) *exec.Cmd {
 // a stream, such as OpenCode's server-sent event endpoint.
 func (d CLIDriver) ExecStreamCommand(ctx context.Context, name string, command []string) *exec.Cmd {
 	args := append([]string{"exec", name}, command...)
-	return exec.CommandContext(ctx, d.binary, args...)
+	return d.command(ctx, args...)
 }
 
 // ExecOutput runs a command inside a running container without a TTY and
@@ -585,7 +606,7 @@ func (d CLIDriver) ExecOutputAs(ctx context.Context, name, user string, command 
 	}
 	args = append(args, name)
 	args = append(args, command...)
-	cmd := exec.CommandContext(ctx, d.binary, args...)
+	cmd := d.command(ctx, args...)
 
 	slog.Debug("running container exec", "runtime", d.binary, "container", name, "user", user, "command", command)
 
@@ -630,7 +651,7 @@ func (d CLIDriver) Exec(ctx context.Context, spec ExecSpec) ([]byte, error) {
 
 	slog.Debug("running container exec", "runtime", d.binary, "container", spec.Container, "user", spec.User, "args", spec.Args)
 
-	cmd := exec.CommandContext(ctx, d.binary, args...)
+	cmd := d.command(ctx, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		slog.Debug("container exec failed", "runtime", d.binary, "container", spec.Container, "args", spec.Args, "error", err, "output", strings.TrimSpace(string(output)))
@@ -643,7 +664,7 @@ func (d CLIDriver) Exec(ctx context.Context, spec ExecSpec) ([]byte, error) {
 func (d CLIDriver) run(ctx context.Context, args ...string) error {
 	redactedArgs := redactEnvArgs(args)
 	slog.Debug("running runtime command", "runtime", d.binary, "args", redactedArgs)
-	cmd := exec.CommandContext(ctx, d.binary, args...)
+	cmd := d.command(ctx, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		slog.Debug("runtime command failed", "runtime", d.binary, "args", redactedArgs, "error", err, "output", strings.TrimSpace(string(output)))
@@ -677,7 +698,7 @@ func redactEnvValue(value string) string {
 
 func (d CLIDriver) runAllowMissing(ctx context.Context, args []string, resource string) error {
 	slog.Debug("running runtime command", "runtime", d.binary, "args", args)
-	cmd := exec.CommandContext(ctx, d.binary, args...)
+	cmd := d.command(ctx, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if isMissingResourceOutput(output) {
@@ -694,7 +715,7 @@ func (d CLIDriver) runAllowMissing(ctx context.Context, args []string, resource 
 }
 
 func (d CLIDriver) imageExists(ctx context.Context, imageName string) (bool, error) {
-	cmd := exec.CommandContext(ctx, d.binary, "image", "inspect", imageName)
+	cmd := d.command(ctx, "image", "inspect", imageName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if isMissingResourceOutput(output) {
