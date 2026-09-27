@@ -25,6 +25,23 @@ if [ "$installed" = true ]; then
   sudo update-ca-certificates || exit 1
 fi
 
+# Keep Claude Code current. The image ships the npm build in the root-owned global
+# node_modules, where Claude's own auto-updater cannot write as the workspace
+# user, so it would stay at whatever version the image was built with. Install
+# the native build into the persistent home instead (~/.local/bin is first on
+# PATH, so it takes over from the image's copy) and update it on every start;
+# while Claude runs, its built-in auto-updater keeps that copy current. Runs in
+# the background and never blocks or fails the workspace: when it can't reach
+# the network the image's build simply stays in use.
+update_claude() {
+  if [ -x "$HOME/.local/bin/claude" ]; then
+    "$HOME/.local/bin/claude" update
+  elif command -v claude >/dev/null 2>&1; then
+    claude install
+  fi
+}
+update_claude >/tmp/opencode-manager-claude-update.log 2>&1 &
+
 serve_opencode() {
   child=""
   shutdown() { [ -n "$child" ] && kill -TERM "$child" 2>/dev/null; exit 0; }
