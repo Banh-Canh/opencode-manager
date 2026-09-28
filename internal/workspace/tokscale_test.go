@@ -106,10 +106,10 @@ func TestTokenUsageAggregates(t *testing.T) {
 		t.Errorf("TodayMsgs=%d want 3", usage.TodayMsgs)
 	}
 
-	// Both calls must scope tokscale to opencode JSON output.
+	// Both calls must scope tokscale to OpenCode and Claude Code JSON output.
 	for _, args := range fake.gotArgs {
 		joined := strings.Join(args, " ")
-		if !strings.Contains(joined, "tokscale --json --client opencode") {
+		if !strings.Contains(joined, "tokscale --json --client opencode,claude") {
 			t.Errorf("unexpected tokscale args: %q", joined)
 		}
 	}

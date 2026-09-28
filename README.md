@@ -132,7 +132,7 @@ The dashboard table includes a **TOKENS I/O/C** column showing each workspace's
 all-time input / output / cache-read token usage (compacted as `k`/`M`/`B`, e.g.
 `12.3k/4.5k/89k`).
 It is measured with [tokscale](https://www.npmjs.com/package/tokscale) inside the
-container — refreshed when a workspace starts and each time it finishes a turn —
+container, summing OpenCode and Claude Code sessions — refreshed when a workspace starts and each time it finishes a turn —
 and the full breakdown is on the describe page (`d`).
 
 ### Templates

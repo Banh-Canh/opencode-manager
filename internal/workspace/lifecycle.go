@@ -1043,8 +1043,8 @@ func openCodeSessionCommand() []string {
 	return args
 }
 
-// TokenUsage combines OpenCode usage reported by tokscale with DSH usage
-// observed by the bundled dsh-tui client.
+// TokenUsage combines OpenCode and Claude Code usage reported by tokscale with
+// DSH usage observed by the bundled dsh-tui client.
 type TokenUsage struct {
 	TotalTokens int64
 	TotalCost   float64
@@ -1084,7 +1084,7 @@ type tokscaleAggregate struct {
 }
 
 // TokenUsage runs tokscale inside the workspace container to summarize OpenCode
-// token usage, both all-time and for the current day. The container must be
+// and Claude Code token usage, both all-time and for the current day. The container must be
 // running.
 func (l Lifecycle) TokenUsage(ctx context.Context, summary Summary) (TokenUsage, error) {
 	containerName := summary.Manifest.ContainerName
@@ -1167,8 +1167,13 @@ func (l Lifecycle) SessionEvents(ctx context.Context, summary Summary) (*exec.Cm
 	return l.driver.ExecStreamCommand(ctx, summary.Manifest.ContainerName, []string{"curl", "--no-buffer", "--fail", "--silent", "--show-error", endpoint}), nil
 }
 
+// tokscaleClients lists the agents whose local session data tokscale sums for a
+// workspace: OpenCode's database and Claude Code's ~/.claude/projects
+// transcripts. A workspace may have used either agent, so both always count.
+const tokscaleClients = "opencode,claude"
+
 func (l Lifecycle) runTokscale(ctx context.Context, containerName string, extra []string) (tokscaleAggregate, error) {
-	args := append([]string{"tokscale", "--json", "--client", "opencode"}, extra...)
+	args := append([]string{"tokscale", "--json", "--client", tokscaleClients}, extra...)
 	output, err := l.driver.ExecOutput(ctx, containerName, args)
 	if err != nil {
 		return tokscaleAggregate{}, err
