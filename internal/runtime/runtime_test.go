@@ -8,7 +8,107 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
+
+func TestWorkspaceBuildFingerprintTracksInputs(t *testing.T) {
+	spec := BuildSpec{ImageName: "demo", BaseImage: "base", UID: 1000, GID: 1000}
+	files := fstest.MapFS{"Dockerfile.workspace": {Data: []byte("FROM base")}, "script": {Data: []byte("original")}}
+	original, err := workspaceBuildFingerprint(spec, "base-id", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []string{"refresh", "tag", "base", "baseID", "uid", "gid", "script", "recipe"} {
+		t.Run(change, func(t *testing.T) {
+			changed := spec
+			baseID := "base-id"
+			copy := fstest.MapFS{}
+			for name, file := range files {
+				copy[name] = file
+			}
+			switch change {
+			case "refresh":
+				changed.Refresh = true
+			case "tag":
+				changed.ImageName = "renamed"
+			case "base":
+				changed.BaseImage = "other"
+			case "baseID":
+				baseID = "new-base-id"
+			case "uid":
+				changed.UID++
+			case "gid":
+				changed.GID++
+			case "script":
+				copy["script"] = &fstest.MapFile{Data: []byte("updated")}
+			case "recipe":
+				copy["Dockerfile.workspace"] = &fstest.MapFile{Data: []byte("updated")}
+			}
+			got, err := workspaceBuildFingerprint(changed, baseID, copy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantSame := change == "refresh" || change == "tag"
+			if (got == original) != wantSame {
+				t.Fatalf("fingerprint equality = %v, want %v", got == original, wantSame)
+			}
+		})
+	}
+}
+
+func TestBuildImageReusesUpdatedImageAcrossDrivers(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "runtime")
+	// Persist the label as a real runtime would. Every build records a line,
+	// independently of the CLIDriver instance making the call.
+	script := `#!/bin/sh
+set -eu
+state="$(dirname "$0")"
+if [ "$1" = image ] && [ "$2" = inspect ]; then
+  case "$4" in
+    '{{.Id}}') echo base-id ;;
+    *) if [ -f "$state/label" ]; then cat "$state/label"; else echo 'No such image' >&2; exit 1; fi ;;
+  esac
+elif [ "$1" = build ]; then
+  echo build >> "$state/builds"
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = --label ]; then shift; printf '%s' "${1#*=}" > "$state/label"; fi
+    shift
+  done
+else
+  exit 2
+fi
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := BuildSpec{ImageName: "demo", BaseImage: "base", UID: 1000, GID: 1000}
+	build := func(want int) {
+		t.Helper()
+		if err := (CLIDriver{binary: binary}).BuildImage(context.Background(), spec); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(filepath.Join(dir, "builds"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Count(string(data), "build\n"); got != want {
+			t.Fatalf("builds = %d, want %d", got, want)
+		}
+	}
+	build(1) // Missing image.
+	build(1) // New manager instance, identical inputs.
+	spec.Refresh = true
+	build(2) // Explicit update must build even with identical inputs.
+	spec.Refresh = false
+	build(2) // First reuse after update must keep the updated image.
+	spec.UID++
+	build(3)
+	if err := os.WriteFile(filepath.Join(dir, "label"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	build(4) // Legacy image without a fingerprint.
+}
 
 func TestNewDriverRejectsUnsupportedRuntime(t *testing.T) {
 	if _, err := NewDriver("containerd"); err == nil {

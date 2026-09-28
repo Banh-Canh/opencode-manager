@@ -202,9 +202,12 @@ func (l Lifecycle) ensureStartedWithOptions(ctx context.Context, summary Summary
 
 	// Converge module state: a freshly (re)created container has lost its
 	// writable layer, so reinstall any selected modules. This is a cheap no-op
-	// (one marker read) when nothing changed. A failure here is logged but does
-	// not prevent the container from being usable.
+	// (one marker read) when nothing changed. Explicit updates/recovery must not
+	// report success before modules are ready. Normal starts remain best-effort.
 	if err := l.reconcile(ctx, summary); err != nil {
+		if refreshBase || recreate {
+			return fmt.Errorf("reconcile workspace modules: %w", err)
+		}
 		slog.Warn("module reconcile failed", "workspace", summary.Manifest.Name, "container", name, "error", err)
 	}
 	if err := l.reconcileDeepSeekProfilesLocked(ctx, summary); err != nil {

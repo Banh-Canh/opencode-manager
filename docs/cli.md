@@ -48,7 +48,7 @@ it directly with `ocm improve` after enabling `selfImprovement.enabled` in
 | `ws start [ws]` | Start a container (building the image if needed). `--all` starts every workspace. |
 | `ws stop [ws]` | Stop a running container. `--all` stops every workspace. |
 | `ws restart [ws]` | Stop then start. `--all` for every workspace. |
-| `ws update [ws]` | Apply the current global `baseImage` configuration, pull its base image, rebuild the workspace image without cache, and replace the container while preserving the workspace home. `--all` for every workspace. |
+| `ws update [ws]` | Apply the current global `baseImage` configuration, pull its base image, rebuild the workspace image without cache, and replace the container while preserving the workspace home. Waits for module reconciliation and reports an error if a module cannot be restored. `--all` for every workspace. |
 | `ws version <ws>` | Print the OpenCode version running in the workspace. |
 | `ws attach <ws>` | Attach to the default agent runtime. `--runtime opencode\|deepseek\|claude` overrides it. |
 | `ws shell <ws>` (`sh`) | Open an interactive shell inside the container. |
