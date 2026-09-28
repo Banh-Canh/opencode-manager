@@ -448,6 +448,51 @@ func TestRequestDeleteDefaultsToCancel(t *testing.T) {
 	}
 }
 
+func TestSpaceSelectsWorkspacesForBatchActions(t *testing.T) {
+	alpha := workspace.Summary{Manifest: workspace.Manifest{Name: "alpha"}}
+	beta := workspace.Summary{Manifest: workspace.Manifest{Name: "beta"}}
+	m := model{baseImageReady: true, workspaces: []workspace.Summary{alpha, beta}}
+
+	updated, _ := m.updateKey(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(model)
+	if !m.selectedWorkspaces["alpha"] {
+		t.Fatal("Space should select the workspace under the cursor")
+	}
+
+	m.moveWorkspace(1)
+	updated, _ = m.updateKey(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(model)
+	targets := m.actionTargetWorkspaces()
+	if len(targets) != 2 || targets[0].Manifest.Name != "alpha" || targets[1].Manifest.Name != "beta" {
+		t.Fatalf("batch targets = %#v, want alpha and beta", targets)
+	}
+
+	updated, _ = m.updateKey(tea.KeyMsg{Type: tea.KeySpace})
+	m = updated.(model)
+	if m.selectedWorkspaces["beta"] || len(m.actionTargetWorkspaces()) != 1 {
+		t.Fatal("Space should unselect an already selected workspace")
+	}
+}
+
+func TestBatchSelectionSurvivesFilteringAndIsPrunedAfterDeletion(t *testing.T) {
+	alpha := workspace.Summary{Manifest: workspace.Manifest{Name: "alpha"}}
+	beta := workspace.Summary{Manifest: workspace.Manifest{Name: "beta"}}
+	m := model{
+		workspaces:         []workspace.Summary{alpha, beta},
+		selectedWorkspaces: map[string]bool{"alpha": true, "beta": true},
+	}
+	m.filter = "alpha"
+	if targets := m.actionTargetWorkspaces(); len(targets) != 2 {
+		t.Fatalf("filtered batch targets = %d, want 2", len(targets))
+	}
+
+	m.workspaces = []workspace.Summary{alpha}
+	m.pruneWorkspaceStatusState()
+	if m.selectedWorkspaces["beta"] {
+		t.Fatal("deleted workspace should be removed from the selection")
+	}
+}
+
 // A workspace whose container has not been created yet must show "creating"
 // while provisioning, not "missing" (the raw runtime status of a container that
 // does not exist).

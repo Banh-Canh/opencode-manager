@@ -38,25 +38,26 @@ var appVersion = "dev"
 const npmPackageName = "@mickaelroger78/opencode-manager"
 
 type model struct {
-	cfg              config.Config
-	registry         workspace.Registry
-	templateRegistry workspace.TemplateRegistry
-	lifecycle        workspace.Lifecycle
-	lifecycleErr     string
-	workspaces       []workspace.Summary
-	statuses         map[string]workspace.Status
-	statusRecency    map[string]uint64
-	statusSequence   uint64
-	workspacePos     int
-	width            int
-	height           int
-	runtimeName      string
-	runtimeError     string
-	loadError        string
-	message          string
-	quitConfirmation bool
-	errorTitle       string
-	errorMessage     string
+	cfg                config.Config
+	registry           workspace.Registry
+	templateRegistry   workspace.TemplateRegistry
+	lifecycle          workspace.Lifecycle
+	lifecycleErr       string
+	workspaces         []workspace.Summary
+	statuses           map[string]workspace.Status
+	statusRecency      map[string]uint64
+	statusSequence     uint64
+	workspacePos       int
+	selectedWorkspaces map[string]bool
+	width              int
+	height             int
+	runtimeName        string
+	runtimeError       string
+	loadError          string
+	message            string
+	quitConfirmation   bool
+	errorTitle         string
+	errorMessage       string
 
 	// baseImageReady gates the whole dashboard: until the managed base image
 	// finishes building (baseImageReadyMsg), the UI shows a blocking overlay and
@@ -508,6 +509,7 @@ func newModel(cfg config.Config) model {
 		installing:           map[string]bool{},
 		provisioning:         map[string]bool{},
 		updating:             map[string]bool{},
+		selectedWorkspaces:   map[string]bool{},
 		width:                100,
 		height:               30,
 		message:              "Creating the base image...",
@@ -879,6 +881,8 @@ func (m model) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showHelp = true
 	case "ctrl+d":
 		m.requestDelete()
+	case " ", "space":
+		m.toggleWorkspaceSelection()
 	case "esc":
 		if m.filter != "" {
 			m.filter = ""
@@ -1249,8 +1253,8 @@ func (m model) provisionWorkspace(summary workspace.Summary) tea.Cmd {
 }
 
 func (m model) stopSelected() (tea.Model, tea.Cmd) {
-	selected, ok := m.selectedWorkspace()
-	if !ok {
+	targets := m.actionTargetWorkspaces()
+	if len(targets) == 0 {
 		m.message = "Stop requires a selected workspace."
 		return m, nil
 	}
@@ -1259,21 +1263,29 @@ func (m model) stopSelected() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.recreating[selected.Manifest.Name] {
+	cmds := make([]tea.Cmd, 0, len(targets))
+	for _, target := range targets {
+		if m.recreating[target.Manifest.Name] {
+			continue
+		}
+		workspace := target
+		cmds = append(cmds, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			return lifecycleActionMsg{action: "Stop", name: workspace.Manifest.Name, err: m.lifecycle.Stop(ctx, workspace)}
+		})
+	}
+	if len(cmds) == 0 {
 		m.message = "Wait until container recreation finishes."
 		return m, nil
 	}
-	m.message = "Stopping " + selected.Manifest.Name + "..."
-	return m, func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		return lifecycleActionMsg{action: "Stop", name: selected.Manifest.Name, err: m.lifecycle.Stop(ctx, selected)}
-	}
+	m.message = "Stopping " + m.actionTargetLabel(targets) + "..."
+	return m, tea.Batch(cmds...)
 }
 
 func (m model) deleteSelected() (tea.Model, tea.Cmd) {
-	selected, ok := m.selectedWorkspace()
-	if !ok {
+	targets := m.actionTargetWorkspaces()
+	if len(targets) == 0 {
 		m.message = "Delete requires a selected workspace."
 		return m, nil
 	}
@@ -1282,16 +1294,24 @@ func (m model) deleteSelected() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.recreating[selected.Manifest.Name] {
+	cmds := make([]tea.Cmd, 0, len(targets))
+	for _, target := range targets {
+		if m.recreating[target.Manifest.Name] {
+			continue
+		}
+		workspace := target
+		cmds = append(cmds, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			return lifecycleActionMsg{action: "Delete", name: workspace.Manifest.Name, err: m.lifecycle.Delete(ctx, workspace)}
+		})
+	}
+	if len(cmds) == 0 {
 		m.message = "Wait until container recreation finishes."
 		return m, nil
 	}
-	m.message = "Deleting " + selected.Manifest.Name + "..."
-	return m, func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-		return lifecycleActionMsg{action: "Delete", name: selected.Manifest.Name, err: m.lifecycle.Delete(ctx, selected)}
-	}
+	m.message = "Deleting " + m.actionTargetLabel(targets) + "..."
+	return m, tea.Batch(cmds...)
 }
 
 func (m model) attachSelected() (tea.Model, tea.Cmd) {
@@ -1447,22 +1467,46 @@ func (m model) shellSelected() (tea.Model, tea.Cmd) {
 // toggleStartStop starts a stopped workspace or stops a running one, based on
 // the current container status.
 func (m model) toggleStartStop() (tea.Model, tea.Cmd) {
-	selected, ok := m.selectedWorkspace()
-	if !ok {
+	targets := m.actionTargetWorkspaces()
+	if len(targets) == 0 {
 		m.message = "Start/Stop requires a selected workspace."
 		return m, nil
 	}
-
-	if status, ok := m.statuses[selected.Manifest.Name]; ok && status.Container == runtime.StatusRunning {
-		return m.stopSelected()
+	if m.lifecycleErr != "" {
+		m.showError("Start/Stop Workspace", "Start/Stop failed: "+m.lifecycleErr)
+		return m, nil
 	}
-
-	return m.startSelected()
+	cmds := make([]tea.Cmd, 0, len(targets))
+	for _, target := range targets {
+		if m.recreating[target.Manifest.Name] {
+			continue
+		}
+		workspace := target
+		if m.statuses[workspace.Manifest.Name].Container == runtime.StatusRunning {
+			cmds = append(cmds, func() tea.Msg {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				return lifecycleActionMsg{action: "Stop", name: workspace.Manifest.Name, err: m.lifecycle.Stop(ctx, workspace)}
+			})
+			continue
+		}
+		cmds = append(cmds, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+			return lifecycleActionMsg{action: "Start", name: workspace.Manifest.Name, err: m.lifecycle.EnsureStarted(ctx, workspace)}
+		})
+	}
+	if len(cmds) == 0 {
+		m.message = "Wait until container recreation finishes."
+		return m, nil
+	}
+	m.message = "Applying start/stop to " + m.actionTargetLabel(targets) + "..."
+	return m, tea.Batch(cmds...)
 }
 
 func (m model) startSelected() (tea.Model, tea.Cmd) {
-	selected, ok := m.selectedWorkspace()
-	if !ok {
+	targets := m.actionTargetWorkspaces()
+	if len(targets) == 0 {
 		m.message = "Start requires a selected workspace."
 		return m, nil
 	}
@@ -1471,23 +1515,31 @@ func (m model) startSelected() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.recreating[selected.Manifest.Name] {
+	cmds := make([]tea.Cmd, 0, len(targets))
+	for _, target := range targets {
+		if m.recreating[target.Manifest.Name] {
+			continue
+		}
+		workspace := target
+		cmds = append(cmds, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+			return lifecycleActionMsg{action: "Start", name: workspace.Manifest.Name, err: m.lifecycle.EnsureStarted(ctx, workspace)}
+		})
+	}
+	if len(cmds) == 0 {
 		m.message = "Wait until container recreation finishes."
 		return m, nil
 	}
-	m.message = "Starting " + selected.Manifest.Name + "..."
-	return m, func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		return lifecycleActionMsg{action: "Start", name: selected.Manifest.Name, err: m.lifecycle.EnsureStarted(ctx, selected)}
-	}
+	m.message = "Starting " + m.actionTargetLabel(targets) + "..."
+	return m, tea.Batch(cmds...)
 }
 
 // updateSelected refreshes the selected workspace base image. It is gated on
 // agent activity because replacing the container would interrupt active work.
 func (m model) updateSelected() (tea.Model, tea.Cmd) {
-	selected, ok := m.selectedWorkspace()
-	if !ok {
+	targets := m.actionTargetWorkspaces()
+	if len(targets) == 0 {
 		m.message = "Update requires a selected workspace."
 		return m, nil
 	}
@@ -1496,36 +1548,37 @@ func (m model) updateSelected() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	name := selected.Manifest.Name
-	switch m.statuses[name].Activity {
-	case workspace.ActivityWorking, workspace.ActivityWaiting:
-		m.message = fmt.Sprintf("Cannot update %s while a task is running. Wait until it is idle.", name)
-		return m, nil
-	}
-
-	if m.recreating[name] {
-		m.message = fmt.Sprintf("%s is being recreated. Wait until it finishes.", name)
-		return m, nil
-	}
 	if m.updating == nil {
 		m.updating = map[string]bool{}
 	}
-	m.updating[name] = true
-	m.message = "Updating the base image for " + name + " (this replaces the container)..."
-	return m, func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		err := m.lifecycle.UpdateWorkspaceImage(ctx, selected)
-		return updateActionMsg{name: name, err: err}
+	cmds := make([]tea.Cmd, 0, len(targets))
+	for _, target := range targets {
+		name := target.Manifest.Name
+		if m.recreating[name] || m.statuses[name].Activity == workspace.ActivityWorking || m.statuses[name].Activity == workspace.ActivityWaiting {
+			continue
+		}
+		m.updating[name] = true
+		workspace := target
+		cmds = append(cmds, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+			return updateActionMsg{name: workspace.Manifest.Name, err: m.lifecycle.UpdateWorkspaceImage(ctx, workspace)}
+		})
 	}
+	if len(cmds) == 0 {
+		m.message = "Cannot update " + m.actionTargetLabel(targets) + " while tasks are running or containers are being recreated."
+		return m, nil
+	}
+	m.message = "Updating the base image for " + m.actionTargetLabel(targets) + " (this replaces the container)..."
+	return m, tea.Batch(cmds...)
 }
 
 // recreateSelected removes the selected workspace's container and starts a fresh
 // one, keeping the workspace. Like an update it is gated on agent activity
 // because removing the container interrupts active work.
 func (m model) recreateSelected() (tea.Model, tea.Cmd) {
-	selected, ok := m.selectedWorkspace()
-	if !ok {
+	targets := m.actionTargetWorkspaces()
+	if len(targets) == 0 {
 		m.message = "Recreate requires a selected workspace."
 		return m, nil
 	}
@@ -1534,27 +1587,29 @@ func (m model) recreateSelected() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	name := selected.Manifest.Name
-	if m.updating[name] || m.recreating[name] {
-		m.message = fmt.Sprintf("%s is already being replaced. Wait until it finishes.", name)
-		return m, nil
-	}
-	switch m.statuses[name].Activity {
-	case workspace.ActivityWorking, workspace.ActivityWaiting:
-		m.message = fmt.Sprintf("Cannot recreate %s while a task is running. Wait until it is idle.", name)
-		return m, nil
-	}
-
 	if m.recreating == nil {
 		m.recreating = map[string]bool{}
 	}
-	m.recreating[name] = true
-	m.message = "Recreating the container for " + name + " (the workspace is kept)..."
-	return m, func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		return lifecycleActionMsg{action: "Recreate", name: name, err: m.lifecycle.RecreateContainer(ctx, selected)}
+	cmds := make([]tea.Cmd, 0, len(targets))
+	for _, target := range targets {
+		name := target.Manifest.Name
+		if m.updating[name] || m.recreating[name] || m.statuses[name].Activity == workspace.ActivityWorking || m.statuses[name].Activity == workspace.ActivityWaiting {
+			continue
+		}
+		m.recreating[name] = true
+		workspace := target
+		cmds = append(cmds, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+			return lifecycleActionMsg{action: "Recreate", name: workspace.Manifest.Name, err: m.lifecycle.RecreateContainer(ctx, workspace)}
+		})
 	}
+	if len(cmds) == 0 {
+		m.message = "Cannot recreate " + m.actionTargetLabel(targets) + " while tasks are running or containers are being replaced."
+		return m, nil
+	}
+	m.message = "Recreating the container for " + m.actionTargetLabel(targets) + " (the workspaces are kept)..."
+	return m, tea.Batch(cmds...)
 }
 
 func (m model) executeCommandName(command string) (tea.Model, tea.Cmd) {
@@ -1883,6 +1938,7 @@ func (m model) renderMenu() string {
 		{"e", "Edit"},
 		{"u", "Update base image"},
 		{"r", "Recreate container"},
+		{"Space", "select / unselect workspace"},
 		{"c", "Create"},
 		{"^d", "Delete"},
 		{"q", "Quit"},
@@ -1970,6 +2026,9 @@ func (m model) renderTable(width, height int) string {
 
 func (m model) renderRow(ws workspace.Summary, widths []int, contentWidth int, selected bool) string {
 	name := ws.Manifest.Name
+	if m.selectedWorkspaces[name] {
+		name = "[*] " + name
+	}
 	statusText, statusColor := m.workspaceStatus(ws)
 	activityText, activityColor := m.workspaceActivity(ws)
 	rt := ws.Manifest.Runtime
@@ -2010,7 +2069,11 @@ func (m model) tableTitle(count int) string {
 	if m.filter != "" {
 		scope = "/" + m.filter
 	}
-	return titleStyle.Render("Workspaces") + counterStyle.Render(fmt.Sprintf("(%s)[%d]", scope, count))
+	title := titleStyle.Render("Workspaces") + counterStyle.Render(fmt.Sprintf("(%s)[%d]", scope, count))
+	if selected := len(m.selectedWorkspaces); selected > 0 {
+		title += counterStyle.Render(fmt.Sprintf(" selected:%d", selected))
+	}
+	return title
 }
 
 // boxWithTitle draws a k9s-style bordered box with the title embedded in the
@@ -2429,6 +2492,10 @@ func (m model) renderDeleteConfirmation() string {
 			name = t.Name
 		}
 	}
+	if !m.templatesMode && len(m.selectedWorkspaces) > 0 {
+		name = m.actionTargetLabel(m.actionTargetWorkspaces())
+		noun = "workspaces"
+	}
 	if name == "" {
 		name = "selected " + noun
 	}
@@ -2807,7 +2874,7 @@ func (m model) attentionCounts() (waiting, sleeping int) {
 }
 
 func (m *model) requestDelete() {
-	if len(m.visibleWorkspaces()) == 0 {
+	if len(m.actionTargetWorkspaces()) == 0 {
 		m.message = "No workspace selected."
 		return
 	}
@@ -3608,6 +3675,11 @@ func (m *model) pruneWorkspaceStatusState() {
 			delete(m.statuses, name)
 		}
 	}
+	for name := range m.selectedWorkspaces {
+		if !present[name] {
+			delete(m.selectedWorkspaces, name)
+		}
+	}
 }
 
 func (m model) visibleWorkspaces() []workspace.Summary {
@@ -3642,6 +3714,52 @@ func (m model) selectedWorkspace() (workspace.Summary, bool) {
 	}
 
 	return visible[m.workspacePos], true
+}
+
+// toggleWorkspaceSelection adds or removes the workspace under the cursor from
+// the action set. The cursor remains in place so a second Space unselects it.
+func (m *model) toggleWorkspaceSelection() {
+	selected, ok := m.selectedWorkspace()
+	if !ok {
+		m.message = "No workspace selected."
+		return
+	}
+	if m.selectedWorkspaces == nil {
+		m.selectedWorkspaces = map[string]bool{}
+	}
+	name := selected.Manifest.Name
+	if m.selectedWorkspaces[name] {
+		delete(m.selectedWorkspaces, name)
+		m.message = "Unselected " + name + "."
+		return
+	}
+	m.selectedWorkspaces[name] = true
+	m.message = "Selected " + name + "."
+}
+
+// actionTargetWorkspaces uses explicit Space selections when present; otherwise
+// it preserves the single-row action behavior.
+func (m model) actionTargetWorkspaces() []workspace.Summary {
+	if len(m.selectedWorkspaces) == 0 {
+		if selected, ok := m.selectedWorkspace(); ok {
+			return []workspace.Summary{selected}
+		}
+		return nil
+	}
+	targets := make([]workspace.Summary, 0, len(m.selectedWorkspaces))
+	for _, ws := range m.workspaces {
+		if m.selectedWorkspaces[ws.Manifest.Name] {
+			targets = append(targets, ws)
+		}
+	}
+	return targets
+}
+
+func (m model) actionTargetLabel(targets []workspace.Summary) string {
+	if len(m.selectedWorkspaces) == 0 && len(targets) == 1 {
+		return targets[0].Manifest.Name
+	}
+	return fmt.Sprintf("%d selected workspace%s", len(targets), plural(len(targets), "", "s"))
 }
 
 func (m *model) moveWorkspace(delta int) {

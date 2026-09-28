@@ -32,6 +32,7 @@ general command line. The available views (*kinds*) are:
 | `k` / `↑` | Move up |
 | `g` / `G` | Jump to top / bottom |
 | `^f` / `^b` | Page down / page up |
+| `Space` | Select or unselect a workspace. When one or more workspaces are selected, update, delete, start, stop, and recreate apply to that set. |
 | `↵` (Enter) | **Attach** to the selected workspace's default agent runtime |
 | `^a` (Ctrl+A) | Open the **agent picker**, then attach with the selected agent |
 | `i` | Open the opt-in **self-improvement** workspace (no selection required) |
