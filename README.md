@@ -99,7 +99,7 @@ directory on your `PATH`.
 
 ```sh
 ocm                              # launch the TUI dashboard
-ocm improve                      # open the opt-in private self-improvement workspace
+ocm improve                      # analyze recent sessions and propose harness improvements
 ocm workspaces list              # list workspaces (alias: ocm ws ls)
 ocm workspaces attach <ws>       # attach to a workspace session
 ocm workspaces create <name> --template backend --start
@@ -154,11 +154,12 @@ Templates are stored as `<workspaceRoot>/templates/<name>.yaml`.
 
 Enable `selfImprovement.enabled: true` in `config.yaml`, then run `ocm improve`
 or press `i` on the dashboard. This private OpenCode workspace is excluded from
-workspace lists and can access the manager configuration and all workspace homes.
-Its `/analyze` command delegates incremental OpenCode session analysis to
-subagents and proposes evidence-based configuration/instruction diffs. Date and
-workspace filters, persistent reports, and proposal tracking support repeated
-analyses. See the [self-improvement guide](docs/self-improvement.md).
+workspace lists and immediately starts a bounded incremental analysis of OpenCode
+sessions. Subagents examine the entire OCM configuration and optional additional
+roots, including external knowledge bases. Cumulative observations retain weak
+signals until recurrence justifies a proposal; decisions and reports persist.
+Customize `~/.config/opencode-manager/self-improvement/AGENTS.md` to extend or
+replace the built-in protocol. See the [self-improvement guide](docs/self-improvement.md).
 
 ## Configuration
 

@@ -6,18 +6,45 @@ import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { parseArgs } from "node:util";
+import { consolidate } from "./memory";
 
 type Options = { since?: string; until?: string; workspace?: string; all?: boolean };
 type Paths = { workspaces: string; config: string; output: string };
 type Session = {
   key: string; workspace: string; agent: string; id: string; title: string;
   updated: number; fingerprint: string; snapshot: string; finding: string;
+  family: string; offset: number; next: number; total: number; snapshotHash: string;
+  previousFinding?: string;
 };
 type Run = {
   id: string; started: string; completed?: string; options: Options;
   sessions: Session[]; coverage: Record<string, unknown>[]; errors: string[];
+  protocol: number; sequence: number; baseline: string; settingsHash: string; instructionsHash: string;
 };
-type State = { version: number; sessions: Record<string, { fingerprint: string; run: string; started: string }> };
+type State = { version: number; sessions: Record<string, { fingerprint: string; run: string; started: string; sequence?: number; offset?: number }> };
+type Settings = {
+  analysis: { initialDays: number; maxSessionsPerWorkspace: number; maxCharsPerRun: number; maxCharsPerSession: number; maxWorkers: number };
+  roots: { name: string; path: string; readOnly?: boolean; description?: string }[];
+};
+
+function settingsAt(paths: Paths): Settings {
+  const file = path.join(paths.output, "settings.json");
+  const settings: Partial<Settings> = fs.existsSync(file) ? readJSON(file) : {};
+  const analysis = { initialDays: 7, maxSessionsPerWorkspace: 20, maxCharsPerRun: 240000, maxCharsPerSession: 60000, maxWorkers: 4, ...settings.analysis };
+  for (const [key, value] of Object.entries(analysis)) {
+    if (!Number.isSafeInteger(value) || (value as number) < 1) throw new Error(`Invalid analysis limit: ${key}`);
+  }
+  return { analysis, roots: settings.roots || [{ name: "manager-config", path: paths.config, readOnly: false }] };
+}
+
+function baselineAt(output: string, days: number) {
+  fs.mkdirSync(output, { recursive: true, mode: 0o700 });
+  const file = path.join(output, "baseline.json");
+  try {
+    fs.writeFileSync(file, JSON.stringify({ since: new Date(Date.now() - days * 86400000).toISOString() }), { flag: "wx", mode: 0o600 });
+  } catch (error: any) { if (error.code !== "EEXIST") throw error; }
+  return readJSON(file).since as string;
+}
 
 function hash(value: string | Buffer) {
   return createHash("sha256").update(value).digest("hex");
@@ -76,8 +103,21 @@ function harnessIndex(root: string) {
   return { root, fingerprint: hash(JSON.stringify(files)), files };
 }
 
+function preparing<T>(output: string, fn: () => T): T {
+  fs.mkdirSync(output, { recursive: true, mode: 0o700 });
+  const lock = path.join(output, ".preparation-lock");
+  fs.mkdirSync(lock, { mode: 0o700 });
+  try { return fn(); } finally { fs.rmdirSync(lock); }
+}
+
 export function prepare(paths: Paths, options: Options = {}): Run {
-  const since = date(options.since, -Infinity);
+  return preparing(paths.output, () => prepareRun(paths, options));
+}
+
+function prepareRun(paths: Paths, options: Options): Run {
+  const settings = settingsAt(paths);
+  const baseline = baselineAt(paths.output, settings.analysis.initialDays);
+  const since = date(options.since, options.all || options.until ? -Infinity : date(baseline, -Infinity));
   const until = date(options.until, Infinity);
   if (since >= until) throw new Error("--since must be earlier than --until");
   const all = options.all || options.since !== undefined || options.until !== undefined;
@@ -88,14 +128,24 @@ export function prepare(paths: Paths, options: Options = {}): Run {
   if (options.workspace && !entries.some(e => e.name === options.workspace)) {
     throw new Error(`Workspace slug not found: ${options.workspace}`);
   }
+  const sequenceFile = path.join(paths.output, "sequence.json");
+  const sequence = (fs.existsSync(sequenceFile) ? readJSON(sequenceFile).sequence : 0) + 1;
+  if (!Number.isSafeInteger(sequence) || sequence < 1) throw new Error("Invalid preparation sequence");
+  atomicJSON(sequenceFile, { sequence });
   const id = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
   const dir = path.join(paths.output, "runs", id);
   fs.mkdirSync(path.join(dir, "sessions"), { recursive: true, mode: 0o700 });
   fs.mkdirSync(path.join(dir, "findings"), { mode: 0o700 });
   fs.mkdirSync(path.join(paths.output, "proposals"), { recursive: true, mode: 0o700 });
-  const run: Run = { id, started: new Date().toISOString(), options, sessions: [], coverage: [], errors: [] };
+  const instructionsFile = path.join(paths.output, "AGENTS.md");
+  const instructions = fs.existsSync(instructionsFile) ? fs.readFileSync(instructionsFile, "utf8") : "";
+  const run: Run = { id, started: new Date().toISOString(), options, sessions: [], coverage: [], errors: [],
+    protocol: 2, sequence, baseline, settingsHash: hash(JSON.stringify(settings)), instructionsHash: hash(instructions) };
+  fs.writeFileSync(path.join(dir, "AGENTS.md"), instructions, { mode: 0o600 });
+  atomicJSON(path.join(dir, "settings.json"), settings);
+  const candidates: { session: Omit<Session, "offset" | "next" | "total" | "snapshotHash">; content: string }[] = [];
   try {
-    atomicJSON(path.join(dir, "harness.json"), harnessIndex(paths.config));
+    atomicJSON(path.join(dir, "harness.json"), { roots: settings.roots.map(root => ({ ...root, ...harnessIndex(root.path) })) });
   } catch (error) {
     run.errors.push(`Harness inventory: ${String(error)}`);
   }
@@ -104,24 +154,25 @@ export function prepare(paths: Paths, options: Options = {}): Run {
     if (options.workspace && options.workspace !== workspace) continue;
     const home = path.join(paths.workspaces, workspace, "home");
     const data = path.join(home, ".local/share/opencode");
-    const coverage = { workspace, store: "none", total: 0, selected: 0, unsupportedAgents: [] as string[] };
+    const coverage = { workspace, agent: "opencode", store: "none", total: 0, eligible: 0, selected: 0, pending: 0, partial: 0, characters: 0, outsideWindow: 0, unsupportedAgents: [] as string[] };
     run.coverage.push(coverage);
     if (fs.existsSync(path.join(home, ".claude/projects"))) coverage.unsupportedAgents.push("claude");
     if (fs.existsSync(path.join(home, ".config/deepseek/sessions"))) coverage.unsupportedAgents.push("deepseek");
+    const parents = new Map<string, string>();
     const accept = (info: any, records: unknown[], updated: number) => {
       coverage.total++;
+      parents.set(info.id, info.parent_id || info.parentID || "");
       if (!Number.isFinite(updated)) throw new Error(`Invalid modification time for ${info.id}`);
-      if (updated < since || updated >= until) return;
       const key = JSON.stringify([workspace, "opencode", info.id]);
+      if ((updated < since && (all || !state.sessions[key])) || updated >= until) { coverage.outsideWindow++; return; }
       const content = records.map(record => JSON.stringify(record)).join("\n") + "\n";
       const fingerprint = hash(content);
-      if (!all && state.sessions[key]?.fingerprint === fingerprint) return;
+      if (!all && state.sessions[key]?.fingerprint === fingerprint && !state.sessions[key]?.offset) return;
       const token = hash(key);
       const snapshot = `sessions/${token}.jsonl`;
-      fs.writeFileSync(path.join(dir, snapshot), content, { mode: 0o600 });
-      run.sessions.push({ key, workspace, agent: "opencode", id: info.id, title: info.title || "",
-        updated, fingerprint, snapshot, finding: `findings/${token}.md` });
-      coverage.selected++;
+      candidates.push({ session: { key, workspace, agent: "opencode", id: info.id, title: info.title || "",
+        updated, fingerprint, snapshot, finding: `findings/${token}.md`, family: info.id }, content });
+      coverage.eligible++;
     };
     try {
       const dbFile = path.join(data, "opencode.db");
@@ -177,7 +228,42 @@ export function prepare(paths: Paths, options: Options = {}): Run {
     } catch (error) {
       run.errors.push(`${workspace}: ${String(error)}`);
     }
+    for (const candidate of candidates.filter(c => c.session.workspace === workspace)) {
+      const seen = new Set<string>();
+      let family = candidate.session.id;
+      while (parents.get(family) && !seen.has(family)) { seen.add(family); family = parents.get(family)!; }
+      candidate.session.family = JSON.stringify([workspace, "opencode", family]);
+    }
   }
+  // Round-robin workspaces so a busy project cannot consume the entire budget.
+  const queues = new Map<string, typeof candidates>();
+  for (const candidate of candidates.sort((a, b) => a.session.updated - b.session.updated || a.session.key.localeCompare(b.session.key))) {
+    const queue = queues.get(candidate.session.workspace) || [];
+    queue.push(candidate); queues.set(candidate.session.workspace, queue);
+  }
+  let remaining = settings.analysis.maxCharsPerRun;
+  const active = [...queues.values()];
+  const sliceLimit = Math.min(settings.analysis.maxCharsPerSession, Math.max(1, Math.floor(remaining / Math.max(1, active.length))));
+  for (let round = 0; round < settings.analysis.maxSessionsPerWorkspace && remaining > 0; round++) {
+    for (const queue of active) {
+      const candidate = queue.shift();
+      if (!candidate || remaining <= 0) continue;
+      const { session, content } = candidate;
+      const previous = state.sessions[session.key];
+      const offset = previous?.fingerprint === session.fingerprint ? previous.offset || 0 : 0;
+      const next = Math.min(content.length, offset + sliceLimit, offset + remaining);
+      const chunk = content.slice(offset, next);
+      const selected: Session = { ...session, offset, next, total: content.length, snapshotHash: hash(chunk),
+        ...(previous ? { previousFinding: `runs/${previous.run}/${session.finding}` } : {}) };
+      fs.writeFileSync(path.join(dir, session.snapshot), chunk, { mode: 0o600 });
+      run.sessions.push(selected);
+      remaining -= chunk.length;
+      const coverage = run.coverage.find(c => c.workspace === session.workspace)! as any;
+      coverage.selected++; coverage.characters += chunk.length;
+      if (next < content.length) coverage.partial++;
+    }
+  }
+  for (const coverage of run.coverage as any[]) coverage.pending = coverage.eligible - coverage.selected + coverage.partial;
   atomicJSON(path.join(dir, "run.json"), run);
   return run;
 }
@@ -203,16 +289,19 @@ export function complete(output: string, id: string) {
     nonempty(path.join(dir, "report.md"));
     for (const session of run.sessions) {
       nonempty(path.join(dir, session.finding));
-      if (hash(fs.readFileSync(path.join(dir, session.snapshot))) !== session.fingerprint) {
+      if (hash(fs.readFileSync(path.join(dir, session.snapshot))) !== (session.snapshotHash || session.fingerprint)) {
         throw new Error(`Snapshot was modified: ${session.snapshot}`);
       }
     }
+    if (run.protocol === 2) consolidate(output, run);
     const state = stateAt(output);
     for (const session of run.sessions) {
       const previous = state.sessions[session.key];
       // Completing an older pending run must not replace a newer checkpoint.
-      if (!previous || previous.started <= run.started) {
-        state.sessions[session.key] = { fingerprint: session.fingerprint, run: id, started: run.started };
+      if (!previous || (previous.sequence !== undefined && run.sequence !== undefined ? previous.sequence <= run.sequence : previous.started <= run.started)) {
+        state.sessions[session.key] = { fingerprint: session.fingerprint, run: id, started: run.started,
+          ...(run.sequence !== undefined ? { sequence: run.sequence } : {}),
+          ...(session.next < session.total ? { offset: session.next } : {}) };
       }
     }
     atomicJSON(path.join(output, "state.json"), state);
@@ -229,9 +318,30 @@ export function status(output: string) {
     const file = path.join(root, id, "run.json");
     if (!fs.existsSync(file)) return { id, incompletePreparation: true };
     const run: Run = readJSON(file);
-    return { id, started: run.started, completed: run.completed || null,
-      sessions: run.sessions.length, options: run.options, errors: run.errors };
+    return { id, started: run.started, sequence: run.sequence, completed: run.completed || null,
+      sessions: run.sessions.length, options: run.options, errors: run.errors, coverage: run.coverage };
   });
+}
+
+export function start(paths: Paths, options: Options = {}): Run {
+  return preparing(paths.output, () => resumeOrPrepare(paths, options));
+}
+
+function resumeOrPrepare(paths: Paths, options: Options): Run {
+  const settingsHash = hash(JSON.stringify(settingsAt(paths)));
+  const file = path.join(paths.output, "AGENTS.md");
+  const instructionsHash = hash(fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "");
+  for (const item of status(paths.output).sort((a, b) => (b.sequence || 0) - (a.sequence || 0))) {
+    if (item.completed || item.incompletePreparation || item.errors?.length) continue;
+    const run: Run = readJSON(path.join(runDir(paths.output, item.id), "run.json"));
+    if (run.protocol === 2 && run.settingsHash === settingsHash && run.instructionsHash === instructionsHash &&
+      selectionKey(run.options) === selectionKey(options)) return run;
+  }
+  return prepareRun(paths, options);
+}
+
+function selectionKey(options: Options) {
+  return JSON.stringify([options.since || null, options.until || null, options.workspace || null, !!options.all]);
 }
 
 if (import.meta.main) {
@@ -241,8 +351,8 @@ if (import.meta.main) {
         all: { type: "boolean" }, offset: { type: "string" }, limit: { type: "string" } } });
     const paths: Paths = { workspaces: "/mnt/workspaces", config: "/mnt/manager-config", output: import.meta.dir };
     const [command, id, token] = positionals;
-    if (command === "prepare" && positionals.length === 1 && !values.offset && !values.limit) {
-      const run = prepare(paths, values);
+    if (["prepare", "start"].includes(command) && positionals.length === 1 && !values.offset && !values.limit) {
+      const run = command === "start" ? start(paths, values) : prepare(paths, values);
       console.log(JSON.stringify({ id: run.id, directory: runDir(paths.output, run.id), sessions: run.sessions.length,
         coverage: run.coverage, errors: run.errors }, null, 2));
       if (run.errors.length) process.exitCode = 1;
@@ -260,7 +370,7 @@ if (import.meta.main) {
       console.log(JSON.stringify({ offset, next: Math.min(offset + limit, content.length), total: content.length,
         content: content.slice(offset, offset + limit) }));
     } else {
-      throw new Error("Usage: bun sessions.ts prepare [--since DATE] [--until DATE] [--workspace SLUG] [--all] | complete RUN | status | read RUN TOKEN [--offset N] [--limit N]");
+      throw new Error("Usage: bun sessions.ts start|prepare [--since DATE] [--until DATE] [--workspace SLUG] [--all] | complete RUN | status | read RUN TOKEN [--offset N] [--limit N]");
     }
   } catch (error) {
     console.error(String(error));

@@ -9,7 +9,7 @@ the commands follow a `kubectl`-style `ocm <resource> <verb>` shape.
 
 ```sh
 ocm                              # launch the TUI dashboard
-ocm improve                      # open the private self-improvement workspace
+ocm improve                      # analyze recent sessions and propose harness improvements
 ocm workspaces list              # manage workspaces
 ocm templates list               # inspect templates
 ocm modules list                 # inspect the module catalog

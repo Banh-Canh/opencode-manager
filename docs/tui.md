@@ -86,9 +86,11 @@ picker (`Ctrl+M`), and `@` file references, it provides:
 
 ### Self improvement (`i`)
 
-Opens the private OpenCode analysis workspace when `selfImprovement.enabled` is
-set in `config.yaml`. It is excluded from the workspace table and selectors.
-Use `/analyze`, `/audit-harness`, and `/proposals` inside its OpenCode session.
+Starts a bounded incremental analysis in the private OpenCode workspace when
+`selfImprovement.enabled` is set in `config.yaml`. It is excluded from the workspace
+table and selectors. The agent delegates analysis and proposes several improvements,
+retaining minor observations and prior decisions across runs. Optional `/analyze`,
+`/audit-harness`, and `/proposals` commands remain available inside the session.
 See [Self improvement](self-improvement.md) for setup and session coverage.
 
 ### Shell (`s`)

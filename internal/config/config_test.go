@@ -70,6 +70,27 @@ func TestSelfImprovementConfiguration(t *testing.T) {
 	if _, err := Load(path); err == nil {
 		t.Fatal("unsupported improvement agent should be rejected")
 	}
+	for _, body := range []string{
+		"  instructions:\n    mode: invalid\n",
+		"  analysis:\n    initialDays: -1\n",
+		"  directories:\n    - name: ../outside\n      path: /tmp\n",
+		"  directories:\n    - name: knowledge\n      path: relative\n",
+		"  directories:\n    - name: knowledge\n      path: /tmp\n    - name: knowledge\n      path: /tmp\n",
+	} {
+		writeFile(t, path, []byte("selfImprovement:\n"+body))
+		if _, err := Load(path); err == nil {
+			t.Fatalf("accepted invalid config: %s", body)
+		}
+	}
+	writeFile(t, path, []byte("selfImprovement:\n  instructions:\n    mode: extend\n  directories:\n    - name: knowledge\n      path: ~/knowledge\n      readOnly: true\n  analysis:\n    maxWorkers: 2\n"))
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostPath, err := cfg.SelfImprovement.Directories[0].HostPath()
+	if err != nil || !filepath.IsAbs(hostPath) || cfg.SelfImprovement.Analysis.WithDefaults().MaxWorkers != 2 {
+		t.Fatalf("config = %+v, path=%s, error=%v", cfg.SelfImprovement, hostPath, err)
+	}
 }
 
 func TestLoadParsesExtraMounts(t *testing.T) {

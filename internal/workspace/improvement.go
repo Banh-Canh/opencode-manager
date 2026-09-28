@@ -2,12 +2,15 @@ package workspace
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -42,7 +45,7 @@ func (r Registry) improvementSummary() (Summary, error) {
 }
 
 // EnsureImprovement creates the persistent layout without starting a container.
-// User-editable prompts are seeded once; the session reader is manager-owned.
+// The effective protocol is manager-owned; personal instructions are preserved.
 func (r Registry) EnsureImprovement() (Summary, error) {
 	if !r.cfg.SelfImprovement.Enabled {
 		return Summary{}, fmt.Errorf("self-improvement is disabled; set selfImprovement.enabled: true in config.yaml")
@@ -78,7 +81,7 @@ func (r Registry) EnsureImprovement() (Summary, error) {
 	if err := os.MkdirAll(r.WorkspacesDir(), 0o700); err != nil {
 		return Summary{}, err
 	}
-	if err := seedImprovementAssets(summary.Manifest.HomeDir); err != nil {
+	if err := r.configureImprovement(summary.Manifest.HomeDir); err != nil {
 		return Summary{}, err
 	}
 	if _, err := os.Stat(filepath.Join(summary.Path, ManifestFile)); errors.Is(err, os.ErrNotExist) {
@@ -95,6 +98,9 @@ func seedImprovementAssets(home string) error {
 			return err
 		}
 		rel := strings.TrimPrefix(path, "improvement/")
+		if rel == "AGENTS.md" { // composed with personal instructions below
+			return nil
+		}
 		target := filepath.Join(home, "workspace", filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 			return err
@@ -103,44 +109,126 @@ func seedImprovementAssets(home string) error {
 		if err != nil {
 			return err
 		}
-		if rel == "sessions.ts" {
-			previous, err := os.ReadFile(target)
-			if err == nil && bytes.Equal(previous, data) {
-				return nil
-			}
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
-			}
-			// Do not expose a partially rewritten helper to an ongoing analysis.
-			temp, err := os.CreateTemp(filepath.Dir(target), ".sessions-*")
-			if err != nil {
-				return err
-			}
-			defer os.Remove(temp.Name())
-			_, writeErr := temp.Write(data)
-			closeErr := temp.Close()
-			if writeErr != nil {
-				return writeErr
-			}
-			if closeErr != nil {
-				return closeErr
-			}
-			return os.Rename(temp.Name(), target)
-		}
-		file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if errors.Is(err, os.ErrExist) {
+		previous, err := os.ReadFile(target)
+		if rel == "opencode.json" && err == nil {
+			// Keep local model/provider preferences from the previous seeded config.
 			return nil
 		}
-		if err != nil {
+		if err == nil && bytes.Equal(previous, data) {
+			return nil
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		_, err = file.Write(data)
-		closeErr := file.Close()
-		if err != nil {
-			return err
+		if err == nil && !strings.HasSuffix(rel, ".ts") {
+			// Preserve old/custom prompts before installing the current protocol.
+			backup := filepath.Join(home, "workspace", "legacy-instructions", fmt.Sprintf("%x", sha256.Sum256(previous)), filepath.FromSlash(rel))
+			if err := writeImprovementFile(backup, previous); err != nil {
+				return err
+			}
 		}
-		return closeErr
+		return writeImprovementFile(target, data)
 	})
+}
+
+func writeImprovementFile(file string, data []byte) error {
+	if old, err := os.ReadFile(file); err == nil {
+		if bytes.Equal(old, data) {
+			return nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(file), ".improvement-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(temp.Name())
+	_, writeErr := temp.Write(data)
+	closeErr := temp.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return os.Rename(temp.Name(), file)
+}
+
+func (r Registry) configureImprovement(home string) error {
+	global, err := config.GlobalDir()
+	if err != nil {
+		return err
+	}
+	project := filepath.Join(home, "workspace")
+	personalPath := filepath.Join(global, "self-improvement", "AGENTS.md")
+	if err := os.MkdirAll(filepath.Dir(personalPath), 0o700); err != nil {
+		return err
+	}
+	personal, err := os.ReadFile(personalPath)
+	if errors.Is(err, os.ErrNotExist) {
+		personal = []byte("# Personal self-improvement instructions\n\n<!-- Add priorities, context, and proposal preferences here. OCM preserves this file. -->\n")
+	} else if err != nil {
+		return err
+	}
+	marker := filepath.Join(project, ".instructions-v2")
+	if _, err := os.Stat(marker); errors.Is(err, os.ErrNotExist) {
+		if legacy, err := os.ReadFile(filepath.Join(project, "AGENTS.md")); err == nil {
+			if err := writeImprovementFile(filepath.Join(project, "legacy-instructions", "AGENTS.md"), legacy); err != nil {
+				return err
+			}
+			// Migrate customized V1 instructions, but not the obsolete stock protocol.
+			if fmt.Sprintf("%x", sha256.Sum256(legacy)) != "d1a35aea56bc0cea7bd783a4d52d0e465a6ede2dfc0070a922cc1ed04c6d6a95" && !bytes.Contains(personal, legacy) {
+				personal = append(personal, append([]byte("\n\n# Migrated personal instructions\n\n"), legacy...)...)
+			}
+		}
+	}
+	if err := writeImprovementFile(personalPath, personal); err != nil {
+		return err
+	}
+	meaningful := strings.TrimSpace(regexp.MustCompile(`(?s)<!--.*?-->`).ReplaceAllString(string(personal), ""))
+	if r.cfg.SelfImprovement.Instructions.Mode == "replace" && (meaningful == "" || meaningful == "# Personal self-improvement instructions") {
+		return fmt.Errorf("replace mode requires personal instructions in %s", personalPath)
+	}
+	if err := seedImprovementAssets(home); err != nil {
+		return err
+	}
+	base, err := improvementAssets.ReadFile("improvement/AGENTS.md")
+	if err != nil {
+		return err
+	}
+	if r.cfg.SelfImprovement.Instructions.Mode == "replace" {
+		base = nil
+	}
+	effective := append(base, []byte("\n\n# Personal instructions (take precedence for analysis preferences)\n\n")...)
+	effective = append(effective, personal...)
+	if err := writeImprovementFile(filepath.Join(project, "AGENTS.md"), effective); err != nil {
+		return err
+	}
+	if err := writeImprovementFile(marker, []byte("2\n")); err != nil {
+		return err
+	}
+	type root struct {
+		Name        string `json:"name"`
+		Path        string `json:"path"`
+		Description string `json:"description"`
+		ReadOnly    bool   `json:"readOnly"`
+	}
+	roots := []root{{Name: "manager-config", Path: ImprovementConfigMount, Description: "Entire OCM configuration, harnesses and knowledge base"}}
+	for _, directory := range r.cfg.SelfImprovement.Directories {
+		roots = append(roots, root{directory.Name, "/mnt/improvement/" + directory.Name, directory.Description, directory.ReadOnly})
+	}
+	settings, err := json.MarshalIndent(struct {
+		Analysis config.ImprovementAnalysis `json:"analysis"`
+		Roots    []root                     `json:"roots"`
+	}{r.cfg.SelfImprovement.Analysis.WithDefaults(), roots}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeImprovementFile(filepath.Join(project, "settings.json"), settings)
 }
 
 func (l Lifecycle) isImprovement(summary Summary) bool {
@@ -156,8 +244,23 @@ func (l Lifecycle) improvementMounts() ([]runtime.Mount, error) {
 	if err != nil {
 		return nil, err
 	}
-	return []runtime.Mount{
+	mounts := []runtime.Mount{
 		{Source: global, Target: ImprovementConfigMount},
-		{Source: root, Target: ImprovementWorkspacesMount},
-	}, nil
+		{Source: root, Target: ImprovementWorkspacesMount, ReadOnly: true},
+	}
+	for _, directory := range l.cfg.SelfImprovement.Directories {
+		source, err := directory.HostPath()
+		if err != nil {
+			return nil, err
+		}
+		info, err := os.Stat(source)
+		if err != nil {
+			return nil, fmt.Errorf("self-improvement directory %q: %w", directory.Name, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("self-improvement directory %q is not a directory", directory.Name)
+		}
+		mounts = append(mounts, runtime.Mount{Source: source, Target: "/mnt/improvement/" + directory.Name, ReadOnly: directory.ReadOnly})
+	}
+	return mounts, nil
 }

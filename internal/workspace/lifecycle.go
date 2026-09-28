@@ -399,6 +399,13 @@ func (l Lifecycle) provisionWithOptions(ctx context.Context, summary Summary, re
 	if fingerprint := extraMountsFingerprint(l.cfg.ExtraMounts); fingerprint != "" {
 		env[extraMountsFingerprintEnv] = fingerprint
 	}
+	if l.isImprovement(summary) {
+		privateMounts := make([]config.ExtraMount, 0, len(mounts))
+		for _, mount := range mounts {
+			privateMounts = append(privateMounts, config.ExtraMount{Source: mount.Source, Target: mount.Target, ReadOnly: mount.ReadOnly})
+		}
+		env[extraMountsFingerprintEnv] = extraMountsFingerprint(privateMounts)
+	}
 
 	spec := runtime.ContainerSpec{
 		Name:        manifest.ContainerName,
@@ -786,6 +793,12 @@ func (l Lifecycle) AttachRuntimeCommand(ctx context.Context, summary Summary, ru
 	args, err := provider.AttachCommand()
 	if err != nil {
 		return nil, err
+	}
+	if l.isImprovement(summary) {
+		// A local TUI loads the current effective instructions on every invocation,
+		// and starts with a fresh context instead of continuing an unbounded session.
+		args = []string{"opencode", "/home/debian/workspace", "--agent", "harness-improver", "--prompt",
+			"Start the self-improvement analysis now. Follow AGENTS.md. Resume an unfinished compatible run if available, otherwise prepare a bounded incremental analysis. Delegate raw history and harness reading, consolidate cumulative observations, and present several prioritized proposals with evidence. Do not apply proposals until requested."}
 	}
 	return l.driver.ExecCommand(summary.Manifest.ContainerName, args), nil
 }

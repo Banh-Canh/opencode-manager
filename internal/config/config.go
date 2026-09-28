@@ -171,8 +171,64 @@ type Config struct {
 
 // SelfImprovementConfig enables the private, OpenCode-only analysis workspace.
 type SelfImprovementConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Agent   string `yaml:"agent,omitempty"`
+	Enabled      bool                    `yaml:"enabled"`
+	Agent        string                  `yaml:"agent,omitempty"`
+	Instructions ImprovementInstructions `yaml:"instructions"`
+	Directories  []ImprovementDirectory  `yaml:"directories,omitempty"`
+	Analysis     ImprovementAnalysis     `yaml:"analysis"`
+}
+
+type ImprovementInstructions struct {
+	Mode string `yaml:"mode" json:"mode"`
+}
+
+// Names become stable container paths under /mnt/improvement/<name>.
+type ImprovementDirectory struct {
+	Name        string `yaml:"name" json:"name"`
+	Path        string `yaml:"path" json:"path"`
+	Description string `yaml:"description" json:"description"`
+	ReadOnly    bool   `yaml:"readOnly" json:"readOnly"`
+}
+
+type ImprovementAnalysis struct {
+	InitialDays             int `yaml:"initialDays" json:"initialDays"`
+	MaxSessionsPerWorkspace int `yaml:"maxSessionsPerWorkspace" json:"maxSessionsPerWorkspace"`
+	MaxCharsPerRun          int `yaml:"maxCharsPerRun" json:"maxCharsPerRun"`
+	MaxCharsPerSession      int `yaml:"maxCharsPerSession" json:"maxCharsPerSession"`
+	MaxWorkers              int `yaml:"maxWorkers" json:"maxWorkers"`
+}
+
+func (a ImprovementAnalysis) WithDefaults() ImprovementAnalysis {
+	if a.InitialDays == 0 {
+		a.InitialDays = 7
+	}
+	if a.MaxSessionsPerWorkspace == 0 {
+		a.MaxSessionsPerWorkspace = 20
+	}
+	if a.MaxCharsPerRun == 0 {
+		a.MaxCharsPerRun = 240000
+	}
+	if a.MaxCharsPerSession == 0 {
+		a.MaxCharsPerSession = 60000
+	}
+	if a.MaxWorkers == 0 {
+		a.MaxWorkers = 4
+	}
+	return a
+}
+
+func (d ImprovementDirectory) HostPath() (string, error) {
+	if strings.HasPrefix(d.Path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, strings.TrimPrefix(d.Path, "~/")), nil
+	}
+	if !filepath.IsAbs(d.Path) {
+		return "", fmt.Errorf("selfImprovement directory %q must use an absolute path or ~/", d.Name)
+	}
+	return filepath.Clean(d.Path), nil
 }
 
 // ExtraMount is a host bind mount made available to every workspace container.
@@ -478,6 +534,23 @@ func Load(path string) (Config, error) {
 func (c Config) Validate() error {
 	if c.SelfImprovement.Agent != "" && c.SelfImprovement.Agent != "opencode" {
 		return errors.New("selfImprovement.agent must be opencode")
+	}
+	if mode := c.SelfImprovement.Instructions.Mode; mode != "" && mode != "extend" && mode != "replace" {
+		return errors.New("selfImprovement.instructions.mode must be extend or replace")
+	}
+	a := c.SelfImprovement.Analysis.WithDefaults()
+	if a.InitialDays < 1 || a.MaxSessionsPerWorkspace < 1 || a.MaxCharsPerRun < 1 || a.MaxCharsPerSession < 1 || a.MaxWorkers < 1 {
+		return errors.New("selfImprovement.analysis limits must be positive")
+	}
+	names := map[string]bool{}
+	for _, directory := range c.SelfImprovement.Directories {
+		if !regexp.MustCompile(`^[a-z][a-z0-9-]*$`).MatchString(directory.Name) || names[directory.Name] || directory.Name == "manager-config" {
+			return fmt.Errorf("invalid or duplicate selfImprovement directory name %q", directory.Name)
+		}
+		names[directory.Name] = true
+		if _, err := directory.HostPath(); err != nil {
+			return err
+		}
 	}
 	if c.WorkspaceRoot == "" {
 		return errors.New("workspaceRoot is required")

@@ -4,7 +4,7 @@ agent: harness-improver
 ---
 
 Audit the current harness configurations and instructions under
-/mnt/manager-config and the relevant workspace project instructions. User focus:
+the entire /mnt/manager-config and additional roots listed in settings.json. User focus:
 $ARGUMENTS
 
 Delegate bounded audits to harness-config-analyst; synthesize actionable proposed
