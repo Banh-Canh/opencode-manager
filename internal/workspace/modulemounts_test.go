@@ -2,11 +2,14 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mickael-menu/opencode-manager/internal/config"
+	"github.com/mickael-menu/opencode-manager/internal/runtime"
 )
 
 // writeMountingModule creates a module in <root>/tools/<name> declaring mounts.
@@ -124,5 +127,96 @@ func TestAddMountingModuleRecordsBeforeInstall(t *testing.T) {
 	// install; what matters is that it ran after the manifest listed it.
 	if installs == 0 {
 		t.Fatal("install script never ran")
+	}
+}
+
+// mountDriver keeps the spec of the container it last created, reports it back
+// as the running container's config, and fails the scripts matching failExec.
+type mountDriver struct {
+	*fakeDriver
+	current  *runtime.ContainerSpec
+	created  int
+	failExec string
+}
+
+func (d *mountDriver) ContainerStatus(context.Context, string) (string, error) {
+	if d.current == nil {
+		return runtime.StatusMissing, nil
+	}
+	return runtime.StatusRunning, nil
+}
+func (d *mountDriver) ContainerRuntimeConfig(context.Context, string) (runtime.ContainerRuntimeConfig, error) {
+	if d.current == nil {
+		return runtime.ContainerRuntimeConfig{}, errors.New("no container")
+	}
+	return runtime.ContainerRuntimeConfig{Env: d.current.Env}, nil
+}
+func (d *mountDriver) CreateContainer(_ context.Context, spec runtime.ContainerSpec) error {
+	d.current = &spec
+	d.created++
+	return nil
+}
+func (d *mountDriver) RemoveContainer(context.Context, string) error { d.current = nil; return nil }
+func (d *mountDriver) Exec(ctx context.Context, spec runtime.ExecSpec) ([]byte, error) {
+	if d.failExec != "" && contains(spec.Args, d.failExec) {
+		return nil, errors.New("install failed")
+	}
+	return d.fakeDriver.Exec(ctx, spec)
+}
+
+func TestAddMountingModuleFailedInstallRemovesMount(t *testing.T) {
+	modules := t.TempDir()
+	creds := filepath.Join(t.TempDir(), "credentials.json")
+	writeTestFile(t, creds, []byte("{}"))
+	writeMountingModule(t, modules, "claude-auth", "  - { source: "+creds+", target: /home/debian/.claude/.credentials.json }\n")
+
+	workspacePath := t.TempDir()
+	home := filepath.Join(workspacePath, "home")
+	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := Manifest{Name: "demo", Runtime: "docker", ImageName: "img", ContainerName: "c", HomeDir: home, OpenCodePort: 4100}
+	manifestPath := filepath.Join(workspacePath, ManifestFile)
+	if err := SaveManifest(manifestPath, manifest); err != nil {
+		t.Fatal(err)
+	}
+
+	d := &mountDriver{
+		fakeDriver: &fakeDriver{output: func([]string) []byte { return nil }},
+		failExec:   "/opt/opencode-manager/modules/tools/claude-auth/install",
+	}
+	l := Lifecycle{cfg: config.Config{ModuleDirs: []string{modules}}, driver: d}
+	summary := Summary{Manifest: manifest, Path: workspacePath}
+	if err := l.ensureStarted(context.Background(), summary, false); err != nil {
+		t.Fatalf("ensureStarted: %v", err)
+	}
+	catalog, err := l.Catalog()
+	if err != nil || len(catalog) != 1 {
+		t.Fatalf("Catalog: %v %v", catalog, err)
+	}
+
+	err = l.AddModule(context.Background(), summary, catalog[0], nil)
+	if err == nil || !strings.Contains(err.Error(), "install failed") {
+		t.Fatalf("AddModule error = %v, want the install failure", err)
+	}
+	// The container was recreated with the mount for the install, then again
+	// without it after the rollback.
+	if d.created != 3 {
+		t.Fatalf("containers created = %d, want 3", d.created)
+	}
+	for _, m := range d.current.Mounts {
+		if m.Source == creds {
+			t.Fatalf("failed module mount %+v still in the container", m)
+		}
+	}
+	if _, ok := d.current.Env[moduleMountsFingerprintEnv]; ok {
+		t.Fatal("container still carries the module mounts fingerprint")
+	}
+	saved, err := LoadManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Modules) != 0 {
+		t.Fatalf("manifest modules after rollback: %+v", saved.Modules)
 	}
 }

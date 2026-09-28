@@ -255,7 +255,8 @@ func (l Lifecycle) AddModule(ctx context.Context, summary Summary, mod module.Mo
 // before its install script runs, so the module is recorded in the manifest
 // first and the container recreated with them; the start's reconcile then runs
 // the install. When the install does not succeed the manifest entry is rolled
-// back, and the stray mount goes away on the next start.
+// back and the container reconciled with it, so the workspace does not keep a
+// mount that no installed module grants.
 func (l Lifecycle) addMountingModule(ctx context.Context, summary Summary, mod module.Module, values map[string]string) error {
 	id := mod.InstanceID(values)
 	manifestPath := filepath.Join(summary.Path, ManifestFile)
@@ -288,6 +289,15 @@ func (l Lifecycle) addMountingModule(ctx context.Context, summary Summary, mod m
 		current.UpdatedAt = time.Now().UTC()
 		if err := SaveManifest(manifestPath, current); err != nil {
 			return fmt.Errorf("%w (roll back manifest: %v)", cause, err)
+		}
+		// The container may already run with the module's mounts; recreate it
+		// with the restored mount set. Failing that, stop it: the next start
+		// recreates it from the manifest.
+		if err := l.ensureStarted(ctx, Summary{Manifest: current, Path: summary.Path}, false); err != nil {
+			if stopErr := l.driver.StopContainer(ctx, current.ContainerName); stopErr != nil {
+				return fmt.Errorf("%w (remove module mounts: %v; stop container: %v)", cause, err, stopErr)
+			}
+			return fmt.Errorf("%w (remove module mounts: %v; container stopped)", cause, err)
 		}
 		return cause
 	}
