@@ -12,7 +12,7 @@ import (
 func newImproveCmd(cfg config.Config) *cobra.Command {
 	return &cobra.Command{
 		Use:   "improve",
-		Short: "Open the private harness self-improvement workspace",
+		Short: "Analyze recent sessions and propose harness improvements",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			summary, err := workspace.NewRegistry(cfg).EnsureImprovement()

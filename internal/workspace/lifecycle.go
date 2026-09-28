@@ -202,9 +202,12 @@ func (l Lifecycle) ensureStartedWithOptions(ctx context.Context, summary Summary
 
 	// Converge module state: a freshly (re)created container has lost its
 	// writable layer, so reinstall any selected modules. This is a cheap no-op
-	// (one marker read) when nothing changed. A failure here is logged but does
-	// not prevent the container from being usable.
+	// (one marker read) when nothing changed. Explicit updates/recovery must not
+	// report success before modules are ready. Normal starts remain best-effort.
 	if err := l.reconcile(ctx, summary); err != nil {
+		if refreshBase || recreate {
+			return fmt.Errorf("reconcile workspace modules: %w", err)
+		}
 		slog.Warn("module reconcile failed", "workspace", summary.Manifest.Name, "container", name, "error", err)
 	}
 	if err := l.reconcileDeepSeekProfilesLocked(ctx, summary); err != nil {
@@ -398,6 +401,13 @@ func (l Lifecycle) provisionWithOptions(ctx context.Context, summary Summary, re
 	}
 	if fingerprint := extraMountsFingerprint(l.cfg.ExtraMounts); fingerprint != "" {
 		env[extraMountsFingerprintEnv] = fingerprint
+	}
+	if l.isImprovement(summary) {
+		privateMounts := make([]config.ExtraMount, 0, len(mounts))
+		for _, mount := range mounts {
+			privateMounts = append(privateMounts, config.ExtraMount{Source: mount.Source, Target: mount.Target, ReadOnly: mount.ReadOnly})
+		}
+		env[extraMountsFingerprintEnv] = extraMountsFingerprint(privateMounts)
 	}
 
 	spec := runtime.ContainerSpec{
@@ -786,6 +796,12 @@ func (l Lifecycle) AttachRuntimeCommand(ctx context.Context, summary Summary, ru
 	args, err := provider.AttachCommand()
 	if err != nil {
 		return nil, err
+	}
+	if l.isImprovement(summary) {
+		// A local TUI loads the current effective instructions on every invocation,
+		// and starts with a fresh context instead of continuing an unbounded session.
+		args = []string{"opencode", "/home/debian/workspace", "--agent", "harness-improver", "--prompt",
+			"Start the self-improvement analysis now. Follow AGENTS.md. Resume an unfinished compatible run if available, otherwise prepare a bounded incremental analysis. Delegate raw history and harness reading, consolidate cumulative observations, and present several prioritized proposals with evidence. Do not apply proposals until requested."}
 	}
 	return l.driver.ExecCommand(summary.Manifest.ContainerName, args), nil
 }

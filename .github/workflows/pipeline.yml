@@ -10,6 +10,7 @@ name: Pipeline
 #     base image docker.io/mroger78/ocm-base:dev (+ a per-commit sha tag).
 #   * Push a vX.Y.Z tag -> the gate, then the STABLE channel: npm `latest` and
 #     the base image promoted (same tested digest) to :X.Y.Z and :latest.
+#   * Push a vX.Y.Z-dev tag -> the gate, then npm/image `dev` and a GitHub prerelease.
 
 on:
   push:
@@ -323,7 +324,7 @@ jobs:
             ${{ env.BASE_IMAGE }}:sha-${{ github.sha }}
 
   publish-stable:
-    name: Publish stable channel
+    name: Publish tagged release
     runs-on: ubuntu-latest
     needs: [build, integration, modules]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -367,14 +368,29 @@ jobs:
 
       - name: Set release version from tag
         run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
-      - name: Publish to npm (latest)
+      - name: Select release channel
+        id: channel
+        run: |
+          case "$GITHUB_REF_NAME" in
+            *-dev|*-dev.*)
+              echo "name=dev" >> "$GITHUB_OUTPUT"
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "name=latest" >> "$GITHUB_OUTPUT"
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+      - name: Publish to npm
+        env:
+          NPM_CHANNEL: ${{ steps.channel.outputs.name }}
         # Idempotent so re-running a tag build does not fail on the immutable version.
         run: |
           VERSION="$(node -p "require('./package.json').version")"
           if npm view "@mickaelroger78/opencode-manager@${VERSION}" version >/dev/null 2>&1; then
             echo "npm ${VERSION} already published; skipping."
           else
-            npm publish --access public
+            npm publish --tag "$NPM_CHANNEL" --access public
           fi
 
       # Mirror the npm release as a GitHub release for the tag, attaching the
@@ -383,6 +399,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ steps.channel.outputs.prerelease }}
         # Idempotent: re-running a published tag refreshes the assets instead of
         # failing because the release already exists.
         run: |
@@ -390,9 +407,13 @@ jobs:
             echo "GitHub release ${TAG} exists; refreshing assets."
             gh release upload "$TAG" dist/opencode-manager-* --clobber
           else
+            release_flags=()
+            if [ "$PRERELEASE" = true ]; then
+              release_flags+=(--prerelease --latest=false)
+            fi
             gh release create "$TAG" dist/opencode-manager-* \
               --title "$TAG" \
-              --generate-notes
+              --generate-notes "${release_flags[@]}"
           fi
 
       - name: Set up Buildx
@@ -404,19 +425,20 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Promote base image to version + latest
+      - name: Promote base image to version + channel
         env:
           VERSION: ${{ github.ref_name }}
+          IMAGE_CHANNEL: ${{ steps.channel.outputs.name }}
         run: |
           set -euo pipefail
           SRC="${BASE_IMAGE}:sha-${GITHUB_SHA}"
           VER="${VERSION#v}"
           # Promote the exact digest tested on main for this commit, if present.
           if docker buildx imagetools inspect "$SRC" >/dev/null 2>&1; then
-            echo "Promoting tested digest $SRC -> $VER + latest"
+            echo "Promoting tested digest $SRC -> $VER + $IMAGE_CHANNEL"
             docker buildx imagetools create \
               -t "${BASE_IMAGE}:${VER}" \
-              -t "${BASE_IMAGE}:latest" \
+              -t "${BASE_IMAGE}:${IMAGE_CHANNEL}" \
               "$SRC"
           else
             echo "::warning::$SRC not found (tag not built on main); building from source."
@@ -424,7 +446,7 @@ jobs:
               --platform linux/amd64,linux/arm64 \
               --push \
               -t "${BASE_IMAGE}:${VER}" \
-              -t "${BASE_IMAGE}:latest" \
+              -t "${BASE_IMAGE}:${IMAGE_CHANNEL}" \
               -f "${BASE_CONTEXT}/Dockerfile" \
               "${BASE_CONTEXT}"
           fi

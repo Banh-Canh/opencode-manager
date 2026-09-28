@@ -1578,7 +1578,7 @@ func (m model) executeCommandName(command string) (tea.Model, tea.Cmd) {
 			m.showError("Self improvement", m.lifecycleErr)
 			return m, nil
 		}
-		m.message = "Preparing self-improvement workspace..."
+		m.message = "Preparing incremental harness analysis..."
 		return m, func() tea.Msg {
 			summary, err := m.registry.EnsureImprovement()
 			if err != nil {
@@ -2119,7 +2119,7 @@ func (m model) renderHelp() string {
 		{"^f / ^b", "page down / up"},
 		{"↵", "attach to workspace (default runtime)"},
 		{"^a", "pick the agent, then attach"},
-		{"i", "open private self-improvement workspace"},
+		{"i", "analyze sessions and propose harness improvements"},
 		{"s", "shell into container"},
 		{"t", "start / stop container"},
 		{"d", "describe"},

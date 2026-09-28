@@ -55,12 +55,29 @@ instruction improvements. Default: disabled. `agent` is optional and only
 selfImprovement:
   enabled: true
   agent: opencode
+  instructions:
+    mode: extend # or replace; personal file: self-improvement/AGENTS.md
+  analysis:
+    initialDays: 7
+    maxSessionsPerWorkspace: 20
+    maxCharsPerRun: 240000
+    maxCharsPerSession: 60000
+    maxWorkers: 4
+  directories:
+    - name: knowledge
+      path: ~/knowledge-base
+      description: Shared procedures and conventions
+      readOnly: false
 ```
 
 The manager creates its persistent layout automatically on the next launch.
 Open it with `ocm improve` or `i` on the dashboard. It is excluded from workspace
-lists and selectors. Its container starts on first access; analysis starts only
-when requested. Disabling the option prevents subsequent access and preserves
+lists and selectors. Its container starts on first access; `ocm improve`/`i`
+immediately starts a bounded incremental analysis in a fresh agent context.
+The target is the entire manager configuration plus named additional directories.
+Personal instructions extend or replace the built-in protocol. Reports, minor
+observations, proposal decisions and progress persist across runs.
+Disabling the option prevents subsequent access and preserves
 the instance's data; it does not stop an already-running container.
 
 See [Self improvement](self-improvement.md) for mounts, commands, session coverage,

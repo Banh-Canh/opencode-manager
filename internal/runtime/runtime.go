@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -311,6 +312,32 @@ func (d CLIDriver) PullImage(ctx context.Context, ref string) error {
 	return d.run(ctx, "pull", ref)
 }
 
+const workspaceBuildLabel = "io.opencode-manager.workspace-build"
+
+// Fingerprint inputs rather than build outputs: builders may produce a different
+// image ID for identical inputs (especially after a no-cache update). The label
+// survives manager restarts and does not rely on the builder's cache.
+func workspaceBuildFingerprint(spec BuildSpec, baseID string, files fs.FS) (string, error) {
+	hash := sha256.New()
+	fmt.Fprintf(hash, "%q\x00%q\x00%d\x00%d\x00", spec.BaseImage, baseID, spec.UID, spec.GID)
+	err := fs.WalkDir(files, ".", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		data, err := fs.ReadFile(files, path)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(hash, "%q\x00%d\x00", path, len(data))
+		hash.Write(data)
+		return nil
+	})
+	return fmt.Sprintf("%x", hash.Sum(nil)), err
+}
+
 func (d CLIDriver) BuildImage(ctx context.Context, spec BuildSpec) error {
 	if spec.ImageName == "" {
 		return fmt.Errorf("image name is required")
@@ -320,6 +347,28 @@ func (d CLIDriver) BuildImage(ctx context.Context, spec BuildSpec) error {
 	}
 	if spec.UID <= 0 || spec.GID <= 0 {
 		return fmt.Errorf("valid uid and gid are required")
+	}
+	baseID, err := d.ImageID(ctx, spec.BaseImage)
+	if err != nil {
+		return err
+	}
+	if baseID == "" {
+		return fmt.Errorf("base image %q is missing", spec.BaseImage)
+	}
+	fingerprint, err := workspaceBuildFingerprint(spec, baseID, buildContextFS)
+	if err != nil {
+		return fmt.Errorf("fingerprint workspace build: %w", err)
+	}
+	if !spec.Refresh {
+		format := fmt.Sprintf(`{{index .Config.Labels %q}}`, workspaceBuildLabel)
+		output, err := exec.CommandContext(ctx, d.binary, "image", "inspect", "-f", format, spec.ImageName).CombinedOutput()
+		if err != nil && !isMissingResourceOutput(output) {
+			return fmt.Errorf("inspect workspace image build: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+		if err == nil && strings.TrimSpace(string(output)) == fingerprint {
+			slog.Debug("workspace image inputs unchanged, skipping build", "image", spec.ImageName)
+			return nil
+		}
 	}
 
 	slog.Info("building workspace image", "image", spec.ImageName, "base", spec.BaseImage, "uid", spec.UID, "gid", spec.GID)
@@ -335,6 +384,7 @@ func (d CLIDriver) BuildImage(ctx context.Context, spec BuildSpec) error {
 	}
 
 	args := []string{"build", "-t", spec.ImageName, "-f", filepath.Join(dir, workspaceDockerfile)}
+	args = append(args, "--label", workspaceBuildLabel+"="+fingerprint)
 	if spec.Refresh {
 		args = append(args, "--no-cache")
 	}

@@ -2,13 +2,81 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mickael-menu/opencode-manager/internal/agent"
 	"github.com/mickael-menu/opencode-manager/internal/config"
 	"github.com/mickael-menu/opencode-manager/internal/runtime"
 )
+
+func TestUpdateWorkspaceImageReconcilesModulesBeforeReturning(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(map[bool]string{false: "success", true: "install failure"}[fail], func(t *testing.T) {
+			path := t.TempDir()
+			summary := Summary{Path: path, Manifest: Manifest{
+				Name: "demo", ContainerName: "demo", ImageName: "ocm/demo:latest",
+				HomeDir: filepath.Join(path, "home"), OpenCodePort: 4096,
+				Modules: []ModuleInstance{{Name: "golang", Category: "tools", Version: 1}},
+			}}
+			if err := SaveManifest(filepath.Join(path, ManifestFile), summary.Manifest); err != nil {
+				t.Fatal(err)
+			}
+			driver := &updateModuleDriver{updateDriver: &updateDriver{fakeDriver: &fakeDriver{}}, fail: fail}
+			l := Lifecycle{cfg: config.Config{BaseImage: config.BaseImageConfig{Name: config.DefaultBaseImage}}, driver: driver}
+			err := l.UpdateWorkspaceImage(context.Background(), summary)
+			if fail {
+				if err == nil || !strings.Contains(err.Error(), "install failed") {
+					t.Fatalf("update error = %v", err)
+				}
+				if driver.marked {
+					t.Fatal("failed install must not be marked complete")
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !driver.marked {
+					t.Fatal("update returned before module marker was written")
+				}
+				if err := l.EnsureStarted(context.Background(), summary); err != nil {
+					t.Fatal(err)
+				}
+				if driver.removed != 1 {
+					t.Fatal("subsequent use recreated the container")
+				}
+			}
+			if driver.installs != 1 {
+				t.Fatalf("installs = %d, want 1 during update", driver.installs)
+			}
+		})
+	}
+}
+
+type updateModuleDriver struct {
+	*updateDriver
+	fail     bool
+	installs int
+	marked   bool
+}
+
+func (d *updateModuleDriver) Exec(_ context.Context, spec runtime.ExecSpec) ([]byte, error) {
+	args := strings.Join(spec.Args, " ")
+	switch {
+	case strings.HasSuffix(args, "/golang/install"):
+		d.installs++
+		if d.fail {
+			return nil, errors.New("install failed")
+		}
+	case strings.Contains(args, "base64 -d > "+markerPath):
+		d.marked = true
+	case strings.Contains(args, "cat "+markerPath) && d.marked:
+		return []byte(`[{"name":"golang","version":1}]`), nil
+	}
+	return nil, nil
+}
 
 func TestUpdateWorkspaceImageRefreshesBaseAndRecreatesContainer(t *testing.T) {
 	driver := &updateDriver{fakeDriver: &fakeDriver{}}
