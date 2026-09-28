@@ -157,7 +157,8 @@ via an `opencode.json` in the workspace project directory.
 ## Token accounting
 
 Each workspace's all-time input / output / cache-read token usage is measured
-with [tokscale](https://www.npmjs.com/package/tokscale) inside the container —
+with [tokscale](https://www.npmjs.com/package/tokscale) inside the container,
+combining OpenCode and Claude Code sessions —
 refreshed when a workspace starts and each time it finishes a turn. The
 dashboard shows a compacted **TOKENS I/O/C** column; the full breakdown is on the
 describe page (`d`). See [TUI Guide](tui.md#the-tokens-column).
