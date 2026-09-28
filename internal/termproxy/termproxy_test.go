@@ -30,13 +30,47 @@ func TestTranslateDetachKey(t *testing.T) {
 		{"plain q", "\x1b[113u", "\x1b[113u"},
 		{"arrow key", "\x1b[A", "\x1b[A"},
 		{"escape key", "\x1b", "\x1b"},
-		{"split sequence", "\x1b[113;", "\x1b[113;"},
+		{"unterminated sequence", "a\x1b[113;", "a\x1b[113;"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := string(translateDetachKey([]byte(tc.in), 'q')); got != tc.want {
-				t.Fatalf("translateDetachKey(%q) = %q, want %q", tc.in, got, tc.want)
+			keys := detachKeyTranslator{key: 'q'}
+			if got := string(keys.Translate([]byte(tc.in))) + string(keys.Flush()); got != tc.want {
+				t.Fatalf("translate(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// A sequence split across reads is held back and translated once complete.
+func TestTranslateDetachKeySplitAcrossReads(t *testing.T) {
+	for _, chunks := range [][]string{
+		{"\x1b", "[113;5u"},
+		{"\x1b[", "113;5u"},
+		{"\x1b[113;", "5u"},
+		{"\x1b[113;5", "u"},
+		{"\x1b[27;5;", "113~"},
+		{"a\x1b[11", "3;5ub"},
+		{"\x1b[113;", "", "5u"},
+	} {
+		keys := detachKeyTranslator{key: 'q'}
+		var got []byte
+		for _, chunk := range chunks {
+			got = append(got, keys.Translate([]byte(chunk))...)
+		}
+		if keys.Pending() {
+			t.Fatalf("%q: input still pending after the sequence completed", chunks)
+		}
+		want := strings.ReplaceAll(strings.ReplaceAll(strings.Join(chunks, ""), "\x1b[113;5u", "\x11"), "\x1b[27;5;113~", "\x11")
+		if string(got) != want {
+			t.Fatalf("%q translated to %q, want %q", chunks, got, want)
+		}
+	}
+
+	// Other sequences split across reads come out unchanged.
+	keys := detachKeyTranslator{key: 'q'}
+	got := string(keys.Translate([]byte("\x1b[9"))) + string(keys.Translate([]byte("7;5u")))
+	if got != "\x1b[97;5u" {
+		t.Fatalf("split Ctrl-A translated to %q", got)
 	}
 }
 
@@ -91,6 +125,20 @@ func (b *syncBuffer) String() string {
 // user's terminal sends Ctrl-Q in its extended encoding, and the program reads
 // the raw byte; afterwards the terminal is told to leave the kitty mode.
 func TestRunDeliversDetachKeyAndResetsModes(t *testing.T) {
+	runDetachKey(t, "\x1b[113;5u")
+}
+
+// The same with the extended encoding split across two terminal reads.
+func TestRunDeliversDetachKeySplitAcrossReads(t *testing.T) {
+	saved := pendingInputTimeout
+	pendingInputTimeout = 10 * time.Second
+	defer func() { pendingInputTimeout = saved }()
+	runDetachKey(t, "\x1b[113;", "5u")
+	runDetachKey(t, "\x1b[27;5", ";113~")
+}
+
+func runDetachKey(t *testing.T, chunks ...string) {
+	t.Helper()
 	user, userTTY, err := pty.Open()
 	if err != nil {
 		t.Skipf("no pty available: %v", err)
@@ -113,8 +161,14 @@ func TestRunDeliversDetachKeyAndResetsModes(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if _, err := user.Write([]byte("\x1b[113;5u")); err != nil {
-		t.Fatal(err)
+	for i, chunk := range chunks {
+		if i > 0 {
+			// Let the relay read the previous chunk on its own.
+			time.Sleep(200 * time.Millisecond)
+		}
+		if _, err := user.Write([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	select {
 	case err := <-done:
