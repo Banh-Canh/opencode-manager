@@ -568,6 +568,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmds []tea.Cmd
 		for _, status := range msg.statuses {
 			name := status.Workspace.Manifest.Name
+			if status.CheckPending {
+				// A failed observation is not a workspace state transition. Keep
+				// the last snapshot without bells, reordering, or token refreshes.
+				// Without a snapshot the row stays in its initial "checking" state.
+				if prev, ok := m.statuses[name]; ok {
+					prev.Workspace = status.Workspace
+					next[name] = prev
+				}
+				continue
+			}
 			if prev, ok := m.statuses[name]; ok && statusChanged(prev, status) {
 				if m.statusRecency == nil {
 					m.statusRecency = map[string]uint64{}

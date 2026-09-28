@@ -263,6 +263,45 @@ func TestWorkspaceOrderTracksRecentStatusChanges(t *testing.T) {
 	}
 }
 
+func TestPendingStatusPreservesSnapshotAndRecovers(t *testing.T) {
+	alpha := workspace.Summary{Manifest: workspace.Manifest{Name: "alpha"}}
+	beta := workspace.Summary{Manifest: workspace.Manifest{Name: "beta"}}
+	m := model{
+		workspaces: []workspace.Summary{alpha, beta},
+		statuses: map[string]workspace.Status{
+			"alpha": {Workspace: alpha, Container: runtime.StatusRunning, Activity: workspace.ActivityWaiting, Pending: 2},
+		},
+	}
+	for i := 0; i < 3; i++ {
+		updated, cmd := m.Update(statusListMsg{statuses: []workspace.Status{
+			{Workspace: alpha, CheckPending: true},
+			{Workspace: beta, CheckPending: true},
+		}})
+		m = updated.(model)
+		status := m.statuses["alpha"]
+		if status.Container != runtime.StatusRunning || status.Activity != workspace.ActivityWaiting || status.Pending != 2 || status.Error != "" {
+			t.Fatalf("lost last known state: %+v", status)
+		}
+		if label, _ := m.workspaceStatus(beta); label != "checking" {
+			t.Fatalf("unobserved workspace status = %q, want checking", label)
+		}
+		if cmd != nil || m.statusSequence != 0 {
+			t.Fatal("deferred probes triggered side effects")
+		}
+	}
+	updated, _ := m.Update(statusListMsg{statuses: []workspace.Status{
+		{Workspace: alpha, Container: runtime.StatusExited},
+		{Workspace: beta, Container: runtime.StatusUnknown, Error: "permission denied"},
+	}})
+	m = updated.(model)
+	if label, _ := m.workspaceStatus(alpha); label != "stopped" {
+		t.Fatalf("recovered workspace status = %q, want stopped", label)
+	}
+	if label, _ := m.workspaceStatus(beta); label != "error" {
+		t.Fatalf("real probe failure status = %q, want error", label)
+	}
+}
+
 func TestWorkspaceOrderUsesAlphabeticalFallback(t *testing.T) {
 	alpha := workspace.Summary{Manifest: workspace.Manifest{Name: "alpha"}}
 	beta := workspace.Summary{Manifest: workspace.Manifest{Name: "beta"}}
