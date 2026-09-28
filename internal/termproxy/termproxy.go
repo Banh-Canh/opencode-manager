@@ -46,6 +46,11 @@ func (c *Command) SetStderr(w io.Writer) { c.stderr = w }
 // exits, in case the pty stays open.
 const outputDrainTimeout = time.Second
 
+// pendingInputTimeout is how long an unterminated control sequence at the end
+// of a read waits for the rest before it is forwarded as is. A lone Escape key
+// press ends up here outside the kitty protocol, so it stays short.
+var pendingInputTimeout = 50 * time.Millisecond
+
 // Redraw timing: how long forceRedraw waits for the attach to produce output,
 // and how long each size is held so the program handles both resizes.
 const (
@@ -163,14 +168,17 @@ func (c *Command) Run() error {
 		return fmt.Errorf("read terminal input: %w", err)
 	}
 	defer reader.Close()
+	chunks := make(chan []byte)
 	inputDone := make(chan struct{})
 	go func() {
-		defer close(inputDone)
+		defer close(chunks)
 		buf := make([]byte, 4096)
 		for {
 			n, err := reader.Read(buf)
 			if n > 0 {
-				if _, err := ptmx.Write(translateDetachKey(buf[:n], c.key)); err != nil {
+				select {
+				case chunks <- append([]byte(nil), buf[:n]...):
+				case <-inputDone:
 					return
 				}
 			}
@@ -179,10 +187,40 @@ func (c *Command) Run() error {
 			}
 		}
 	}()
+	go func() {
+		defer close(inputDone)
+		keys := detachKeyTranslator{key: c.key}
+		var flush <-chan time.Time
+		for {
+			var p []byte
+			select {
+			case chunk, ok := <-chunks:
+				if !ok {
+					_, _ = ptmx.Write(keys.Flush())
+					return
+				}
+				p = keys.Translate(chunk)
+			case <-flush:
+				p = keys.Flush()
+			}
+			flush = nil
+			if keys.Pending() {
+				flush = time.After(pendingInputTimeout)
+			}
+			if len(p) == 0 {
+				continue
+			}
+			if _, err := ptmx.Write(p); err != nil {
+				return
+			}
+		}
+	}()
 
 	waitErr := c.cmd.Wait()
 	reader.Cancel()
 	<-inputDone
+	for range chunks { // wait for the reader to let go of the terminal
+	}
 	select {
 	case <-outputDone:
 	case <-time.After(outputDrainTimeout):
