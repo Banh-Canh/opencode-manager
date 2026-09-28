@@ -70,8 +70,19 @@ type claudeRuntime struct{}
 func (claudeRuntime) Name() string        { return Claude }
 func (claudeRuntime) DisplayName() string { return "Claude Code" }
 func (claudeRuntime) AttachCommand() ([]string, error) {
-	return []string{"claude"}, nil
+	return withWorkspaceEnv("claude"), nil
 }
 func (claudeRuntime) RunCommand(prompt string) ([]string, error) {
-	return []string{"claude", "-p", prompt}, nil
+	return withWorkspaceEnv("claude", "-p", prompt), nil
+}
+
+// workspaceEnvScript exports ~/.env, the module-provided environment, then
+// execs its arguments. OpenCode and DeepSeek Harness clients talk to servers
+// the entrypoint started with it; Claude Code runs the agent's tools itself,
+// so it must load the file before starting. argv is passed as "$@", never
+// interpolated into the script.
+const workspaceEnvScript = `set -a; [ -f "$HOME/.env" ] && . "$HOME/.env"; set +a; exec "$@"`
+
+func withWorkspaceEnv(argv ...string) []string {
+	return append([]string{"/bin/sh", "-c", workspaceEnvScript, "sh"}, argv...)
 }
