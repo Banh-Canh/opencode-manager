@@ -203,6 +203,37 @@ func TestDeleteWorkspaceRemovesWorkspaceDirectory(t *testing.T) {
 	}
 }
 
+func TestDeleteWorkspaceRemovesReadOnlyDirectories(t *testing.T) {
+	registry := NewRegistry(testConfig(t))
+	result, err := registry.Create("Demo Workspace")
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+
+	// Mimic the Go module cache, which leaves files in 0555 directories.
+	modDir := filepath.Join(result.Manifest.HomeDir, "go", "pkg", "mod", "example.com@v1.0.0", "doc")
+	if err := os.MkdirAll(modDir, 0o755); err != nil {
+		t.Fatalf("create module dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "spec.md"), []byte("spec"), 0o444); err != nil {
+		t.Fatalf("write module file: %v", err)
+	}
+	for dir := modDir; dir != result.Manifest.HomeDir; dir = filepath.Dir(dir) {
+		if err := os.Chmod(dir, 0o555); err != nil {
+			t.Fatalf("chmod %s: %v", dir, err)
+		}
+	}
+
+	summary := Summary{Manifest: result.Manifest, Path: result.Path}
+	if err := registry.Delete(summary); err != nil {
+		t.Fatalf("Delete returned error: %v", err)
+	}
+
+	if _, err := os.Stat(result.Path); !os.IsNotExist(err) {
+		t.Fatalf("workspace path still exists or stat failed unexpectedly: %v", err)
+	}
+}
+
 func TestDeleteWorkspacePreservesHomeWhenConfigured(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.PreserveData = true

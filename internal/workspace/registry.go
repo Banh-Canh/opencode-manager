@@ -217,7 +217,7 @@ func (r Registry) Delete(summary Summary) error {
 		return r.deletePreservingHome(workspacePath, summary.Manifest.Name)
 	}
 
-	if err := os.RemoveAll(workspacePath); err != nil {
+	if err := removeAll(workspacePath); err != nil {
 		return fmt.Errorf("delete workspace directory %q: %w", workspacePath, err)
 	}
 
@@ -241,13 +241,35 @@ func (r Registry) deletePreservingHome(workspacePath, name string) error {
 			continue
 		}
 		path := filepath.Join(workspacePath, entry.Name())
-		if err := os.RemoveAll(path); err != nil {
+		if err := removeAll(path); err != nil {
 			return fmt.Errorf("delete workspace file %q: %w", path, err)
 		}
 	}
 
 	slog.Info("preserved workspace home directory", "workspace", name, "home", filepath.Join(workspacePath, workspaceHomeSubdir))
 	return nil
+}
+
+// removeAll is os.RemoveAll that also copes with read-only directories left in
+// the workspace home by tools such as Go, whose module cache is chmod 0555. On
+// a permission error it restores owner write access on every directory in the
+// tree and retries.
+func removeAll(path string) error {
+	err := os.RemoveAll(path)
+	if err == nil || !errors.Is(err, os.ErrPermission) {
+		return err
+	}
+
+	_ = filepath.WalkDir(path, func(p string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil || !d.IsDir() {
+			return nil
+		}
+		if info, err := d.Info(); err == nil && info.Mode().Perm()&0o700 != 0o700 {
+			_ = os.Chmod(p, info.Mode().Perm()|0o700)
+		}
+		return nil
+	})
+	return os.RemoveAll(path)
 }
 
 func (r Registry) createLayout(workspacePath string) error {
