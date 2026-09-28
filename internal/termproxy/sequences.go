@@ -25,27 +25,55 @@ func parseCSI(p []byte) (params string, final byte, n int, ok bool) {
 	return "", 0, 0, false
 }
 
-// translateDetachKey rewrites Ctrl+key, as encoded by the kitty keyboard
+// detachKeyTranslator rewrites Ctrl+key, as encoded by the kitty keyboard
 // protocol (CSI key;mods u) or xterm modifyOtherKeys (CSI 27;mods;key ~), to its
 // legacy control byte. Programs such as Claude Code switch the terminal into
 // those modes, where dtach, which only matches the raw byte, never sees its
-// detach key. A sequence split across reads passes through unchanged.
-func translateDetachKey(p []byte, key byte) []byte {
+// detach key. A sequence split across reads is held back until the next read
+// completes it, or until Flush when no more input follows.
+type detachKeyTranslator struct {
+	key     byte
+	pending []byte
+}
+
+// Translate returns the input to forward for p, keeping back an unterminated
+// control sequence at its end.
+func (t *detachKeyTranslator) Translate(p []byte) []byte {
+	if len(t.pending) > 0 {
+		p = append(t.pending, p...)
+		t.pending = nil
+	}
 	out := make([]byte, 0, len(p))
 	for i := 0; i < len(p); {
 		if params, final, n, ok := parseCSI(p[i:]); ok {
-			if isCtrlKey(params, final, key) {
-				out = append(out, key&0x1f)
+			if isCtrlKey(params, final, t.key) {
+				out = append(out, t.key&0x1f)
 			} else {
 				out = append(out, p[i:i+n]...)
 			}
 			i += n
 			continue
 		}
+		if p[i] == 0x1b && csiPrefix(p[i:]) {
+			t.pending = append([]byte(nil), p[i:]...)
+			break
+		}
 		out = append(out, p[i])
 		i++
 	}
 	return out
+}
+
+// Pending reports whether input is held back waiting for the rest of a
+// sequence.
+func (t *detachKeyTranslator) Pending() bool { return len(t.pending) > 0 }
+
+// Flush returns the held back input unchanged, for when the rest of the
+// sequence never comes, such as a lone Escape key press.
+func (t *detachKeyTranslator) Flush() []byte {
+	p := t.pending
+	t.pending = nil
+	return p
 }
 
 func isCtrlKey(params string, final, key byte) bool {
@@ -131,7 +159,7 @@ func (m *Modes) Observe(p []byte) {
 		if !ok {
 			// An unterminated sequence at the end of the chunk is completed by the
 			// next one; anything longer is not a mode change worth tracking.
-			if tail := p[i:]; len(tail) < 32 && (len(tail) < 2 || tail[1] == '[') && incompleteCSI(tail) {
+			if tail := p[i:]; csiPrefix(tail) {
 				m.partial = append([]byte(nil), tail...)
 				return
 			}
@@ -142,7 +170,13 @@ func (m *Modes) Observe(p []byte) {
 	}
 }
 
-func incompleteCSI(tail []byte) bool {
+// csiPrefix reports whether tail, which starts with ESC, is the start of a
+// control sequence that a later read may complete. Anything longer than a
+// sequence worth matching is not held back.
+func csiPrefix(tail []byte) bool {
+	if len(tail) >= 32 || len(tail) >= 2 && tail[1] != '[' {
+		return false
+	}
 	for _, b := range tail[min(2, len(tail)):] {
 		if b < 0x20 || b > 0x3f {
 			return false
