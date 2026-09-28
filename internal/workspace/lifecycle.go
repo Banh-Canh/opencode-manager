@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -35,6 +36,9 @@ type Status struct {
 	Activity  Activity
 	Pending   int // sessions currently blocked on a permission prompt
 	Error     string
+	// CheckPending means the runtime probe was cancelled or timed out, so it
+	// provides no new evidence about the workspace's state.
+	CheckPending bool
 }
 
 type AttachResultMsg struct {
@@ -145,9 +149,20 @@ func (l Lifecycle) ensurePulled(ctx context.Context, ref string) error {
 func (l Lifecycle) Statuses(ctx context.Context, workspaces []Summary) []Status {
 	statuses := make([]Status, 0, len(workspaces))
 	for _, ws := range workspaces {
+		if ctx.Err() != nil {
+			statuses = append(statuses, Status{Workspace: ws, CheckPending: true})
+			continue
+		}
 		containerStatus, err := l.driver.ContainerStatus(ctx, ws.Manifest.ContainerName)
 		status := Status{Workspace: ws, Container: containerStatus}
 		if err != nil {
+			// CommandContext may return "signal: killed" rather than wrapping
+			// the context error when a busy runtime exceeds the probe budget.
+			if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				slog.Debug("container status check deferred", "container", ws.Manifest.ContainerName, "error", err)
+				statuses = append(statuses, Status{Workspace: ws, CheckPending: true})
+				continue
+			}
 			status.Error = err.Error()
 		}
 		status.Activity, status.Pending = readWorkspaceActivity(
