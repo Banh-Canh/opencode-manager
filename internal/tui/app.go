@@ -282,23 +282,24 @@ var (
 )
 
 var (
-	infoKeyStyle  = lipgloss.NewStyle().Foreground(colInfoKey)
-	infoValStyle  = lipgloss.NewStyle().Foreground(colInfoVal)
-	menuKeyStyle  = lipgloss.NewStyle().Foreground(colMenuKey)
-	menuTextStyle = lipgloss.NewStyle().Foreground(colMenuText)
-	logoStyle     = lipgloss.NewStyle().Foreground(colLogo).Bold(true)
-	titleStyle    = lipgloss.NewStyle().Foreground(colTitle)
-	counterStyle  = lipgloss.NewStyle().Foreground(colCounter)
-	headerStyle   = lipgloss.NewStyle().Foreground(colHeader).Bold(true)
-	updateStyle   = lipgloss.NewStyle().Foreground(colStarting).Bold(true)
-	bodyStyle     = lipgloss.NewStyle().Foreground(colBody)
-	mutedStyle    = lipgloss.NewStyle().Foreground(colMuted)
-	errorStyle    = lipgloss.NewStyle().Foreground(colError)
-	cursorStyle   = lipgloss.NewStyle().Foreground(colCursorFg).Background(colCursorBg).Bold(true)
-	crumbStyle    = lipgloss.NewStyle().Foreground(colCursorFg).Background(colCursorBg).Bold(true).Padding(0, 1)
-	filterStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(colFilter).Bold(true).Padding(0, 1)
-	promptStyle   = lipgloss.NewStyle().Foreground(colTitle)
-	borderStyle   = lipgloss.NewStyle().Foreground(colBorder)
+	infoKeyStyle   = lipgloss.NewStyle().Foreground(colInfoKey)
+	infoValStyle   = lipgloss.NewStyle().Foreground(colInfoVal)
+	menuKeyStyle   = lipgloss.NewStyle().Foreground(colMenuKey)
+	menuTextStyle  = lipgloss.NewStyle().Foreground(colMenuText)
+	logoStyle      = lipgloss.NewStyle().Foreground(colLogo).Bold(true)
+	titleStyle     = lipgloss.NewStyle().Foreground(colTitle)
+	counterStyle   = lipgloss.NewStyle().Foreground(colCounter)
+	headerStyle    = lipgloss.NewStyle().Foreground(colHeader).Bold(true)
+	updateStyle    = lipgloss.NewStyle().Foreground(colStarting).Bold(true)
+	bodyStyle      = lipgloss.NewStyle().Foreground(colBody)
+	mutedStyle     = lipgloss.NewStyle().Foreground(colMuted)
+	errorStyle     = lipgloss.NewStyle().Foreground(colError)
+	cursorStyle    = lipgloss.NewStyle().Foreground(colCursorFg).Background(colCursorBg).Bold(true)
+	selectionStyle = lipgloss.NewStyle().Foreground(colCursorFg).Background(colRunning).Bold(true)
+	crumbStyle     = lipgloss.NewStyle().Foreground(colCursorFg).Background(colCursorBg).Bold(true).Padding(0, 1)
+	filterStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(colFilter).Bold(true).Padding(0, 1)
+	promptStyle    = lipgloss.NewStyle().Foreground(colTitle)
+	borderStyle    = lipgloss.NewStyle().Foreground(colBorder)
 
 	// module editor
 	editCategoryStyle = lipgloss.NewStyle().Foreground(colFilter).Bold(true)
@@ -2026,9 +2027,7 @@ func (m model) renderTable(width, height int) string {
 
 func (m model) renderRow(ws workspace.Summary, widths []int, contentWidth int, selected bool) string {
 	name := ws.Manifest.Name
-	if m.selectedWorkspaces[name] {
-		name = "[*] " + name
-	}
+	marked := m.selectedWorkspaces[name]
 	statusText, statusColor := m.workspaceStatus(ws)
 	activityText, activityColor := m.workspaceActivity(ws)
 	rt := ws.Manifest.Runtime
@@ -2037,7 +2036,7 @@ func (m model) renderRow(ws workspace.Summary, widths []int, contentWidth int, s
 	container := ws.Manifest.ContainerName
 	age := m.workspaceAge(ws)
 
-	if selected {
+	if selected || marked {
 		cells := []string{
 			fit(name, widths[0]),
 			fit(statusText, widths[1]),
@@ -2048,7 +2047,11 @@ func (m model) renderRow(ws workspace.Summary, widths []int, contentWidth int, s
 			fit(container, widths[6]),
 			fit(age, widths[7]),
 		}
-		return cursorStyle.Render(" " + strings.Join(cells, "  ") + " ")
+		style := cursorStyle
+		if marked {
+			style = selectionStyle.Underline(selected)
+		}
+		return style.Render(" " + strings.Join(cells, "  ") + " ")
 	}
 
 	cells := []string{
@@ -2192,7 +2195,7 @@ func (m model) renderHelp() string {
 		{"^f / ^b", "page down / up"},
 		{"↵", "attach to workspace (default runtime)"},
 		{"^a", "pick the agent, then attach"},
-		{"i", "analyze sessions and propose harness improvements"},
+		{"i", "open or resume self improvement (/analyze to start analysis)"},
 		{"s", "shell into container"},
 		{"t", "start / stop container"},
 		{"d", "describe"},

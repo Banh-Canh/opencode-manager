@@ -232,8 +232,8 @@ func TestImprovementLaunchAndMountDrift(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if command.Args[0] != "opencode" || !contains(command.Args, "--prompt") || !contains(command.Args, "harness-improver") || contains(command.Args, "-c") {
-		t.Fatalf("expected fresh prompted improvement session: %v", command.Args)
+	if len(command.Args) != 1 || command.Args[0] != "/usr/local/bin/opencode-manager-attach" {
+		t.Fatalf("expected persistent workspace attachment without an automatic prompt: %v", command.Args)
 	}
 	_, before, err := l.provision(context.Background(), s)
 	if err != nil {

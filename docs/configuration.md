@@ -73,7 +73,8 @@ selfImprovement:
 The manager creates its persistent layout automatically on the next launch.
 Open it with `ocm improve` or `i` on the dashboard. It is excluded from workspace
 lists and selectors. Its container starts on first access; `ocm improve`/`i`
-immediately starts a bounded incremental analysis in a fresh agent context.
+reattaches to the latest session. Use `/analyze` to start a bounded incremental
+analysis. Ctrl+C detaches while the server and running analysis continue.
 The target is the entire manager configuration plus named additional directories.
 Personal instructions extend or replace the built-in protocol. Reports, minor
 observations, proposal decisions and progress persist across runs.

@@ -47,6 +47,10 @@ general command line. The available views (*kinds*) are:
 | `^d` | **Delete** the workspace |
 | `q` / `^c` | Quit |
 
+Multi-selected rows are highlighted green without a prefix in the name column.
+The focused row stays green when selected and is underlined to distinguish it
+from the rest of the selection; an unselected focused row is cyan.
+
 ![help overlay](assets/ocm-help.png)
 
 ### Attach (`Enter`)
@@ -87,11 +91,13 @@ picker (`Ctrl+M`), and `@` file references, it provides:
 
 ### Self improvement (`i`)
 
-Starts a bounded incremental analysis in the private OpenCode workspace when
+Opens or resumes the private OpenCode session when
 `selfImprovement.enabled` is set in `config.yaml`. It is excluded from the workspace
 table and selectors. The agent delegates analysis and proposes several improvements,
-retaining minor observations and prior decisions across runs. Optional `/analyze`,
-`/audit-harness`, and `/proposals` commands remain available inside the session.
+retaining minor observations and prior decisions across runs. Use `/analyze` to
+start analysis; `/audit-harness` and `/proposals` are also available. Ctrl+C
+detaches while work continues; pressing `i` again resumes the latest conversation
+without starting another analysis.
 See [Self improvement](self-improvement.md) for setup and session coverage.
 
 ### Shell (`s`)

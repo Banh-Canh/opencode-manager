@@ -1,10 +1,13 @@
 # Harness self improvement
 
-Run **`ocm improve`** or press **`i`** on the dashboard to start an incremental
-analysis immediately. A dedicated OpenCode agent examines recent workspace
+Run **`ocm improve`** or press **`i`** on the dashboard to open or resume the
+private OpenCode session. Use **`/analyze`** to start an incremental analysis.
+A dedicated OpenCode agent examines recent workspace
 sessions, delegates analysis, maintains cumulative observations, and proposes
 several independent improvements. You can discuss, defer, reject or apply each
-proposal in the same conversation. No slash command is required to start.
+proposal in the same conversation. **Ctrl+C** detaches from the session while
+the server and any running analysis continue. Pressing `i` again reconnects to
+the latest session without sending another prompt or starting another analysis.
 
 ## Enable and configure
 
@@ -73,8 +76,8 @@ For example:
 ```
 
 You can also ask the agent to add a preference to this file. Changes take effect
-on the next `ocm improve`/`i` launch; exit the current OpenCode session and reopen
-it to reload instructions and agent definitions.
+after restarting the internal OpenCode server/container. Detaching with Ctrl+C
+and reattaching does not restart the server or reload its configuration.
 
 - **extend** (default): OCM's built-in protocol plus your file. Personal analysis
   preferences take precedence. OCM updates its defaults without replacing your
@@ -109,9 +112,10 @@ versions restart at offset zero rather than mixing incompatible versions.
 Completed session versions are not reanalyzed unless explicitly requested.
 
 `start` reuses an unfinished run when selection arguments, settings and effective
-instructions match. Snapshots and saved findings survive interruption. A new
-launch has a fresh orchestration context; it does not accumulate the entire prior
-conversation. Preparation and completion are serialized separately. An unreadable
+instructions match. Snapshots and saved findings survive interruption. Reattaching
+continues the existing conversation; use OpenCode's `/new` command before `/analyze`
+when you want a fresh orchestration context. Preparation and completion are
+serialized separately. An unreadable
 workspace is reported as a coverage error and prevents completion, rather than
 being silently treated as empty. Successful findings remain available for inspection.
 
@@ -171,7 +175,8 @@ The agent explains which OCM/OpenCode instances need restarting afterward.
 
 ## Commands and storage
 
-Inside the dedicated OpenCode conversation, optional commands remain available:
+Inside the dedicated OpenCode conversation, use `/analyze` to start analysis.
+The following commands are available:
 
 ```text
 /analyze
