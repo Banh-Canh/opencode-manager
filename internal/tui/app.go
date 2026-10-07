@@ -1448,12 +1448,6 @@ func (m model) attachRuntimeSelected(runtimeName string) (tea.Model, tea.Cmd) {
 		m.showError("Attach Workspace", "Attach failed: "+m.lifecycleErr)
 		return m, nil
 	}
-	var err error
-	m, err = m.reloadLifecycleConfig()
-	if err != nil {
-		m.showError("Attach Workspace", "Attach failed: "+err.Error())
-		return m, nil
-	}
 	if m.installing[selected.Manifest.Name] {
 		m.message = fmt.Sprintf("Installing modules in %s. Wait until it finishes before attaching.", selected.Manifest.Name)
 		return m, nil
@@ -1476,12 +1470,6 @@ func (m model) shellSelected() (tea.Model, tea.Cmd) {
 	}
 	if m.lifecycleErr != "" {
 		m.showError("Shell Workspace", "Shell failed: "+m.lifecycleErr)
-		return m, nil
-	}
-	var err error
-	m, err = m.reloadLifecycleConfig()
-	if err != nil {
-		m.showError("Shell Workspace", "Shell failed: "+err.Error())
 		return m, nil
 	}
 	if m.installing[selected.Manifest.Name] {
@@ -1596,12 +1584,6 @@ func (m model) updateSelected() (tea.Model, tea.Cmd) {
 	}
 	if m.lifecycleErr != "" {
 		m.showError("Update Base Image", "Update failed: "+m.lifecycleErr)
-		return m, nil
-	}
-	var err error
-	m, err = m.reloadLifecycleConfig()
-	if err != nil {
-		m.showError("Update Base Image", "Update failed: "+err.Error())
 		return m, nil
 	}
 
