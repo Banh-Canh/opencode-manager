@@ -2,6 +2,8 @@ package tui
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,6 +17,42 @@ import (
 	"github.com/mickael-menu/opencode-manager/internal/runtime"
 	"github.com/mickael-menu/opencode-manager/internal/workspace"
 )
+
+func TestReloadLifecycleConfigPicksUpExtraMountChanges(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	source := t.TempDir()
+	workspaceRoot := t.TempDir()
+	path, err := config.DefaultPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	contents := "workspaceRoot: " + workspaceRoot + "\nruntime: docker\nextraMounts:\n  - source: " + source + "\n    target: /mnt/shared\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := newModel(config.Config{}).reloadLifecycleConfig()
+	if err != nil {
+		t.Fatalf("reloadLifecycleConfig: %v", err)
+	}
+	if got := m.cfg.ExtraMounts; !reflect.DeepEqual(got, []config.ExtraMount{{Source: source, Target: "/mnt/shared"}}) {
+		t.Fatalf("ExtraMounts = %#v", got)
+	}
+
+	if err := os.WriteFile(path, []byte("workspaceRoot: "+workspaceRoot+"\nruntime: docker\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err = m.reloadLifecycleConfig()
+	if err != nil {
+		t.Fatalf("reloadLifecycleConfig after removal: %v", err)
+	}
+	if len(m.cfg.ExtraMounts) != 0 {
+		t.Fatalf("ExtraMounts = %#v, want none", m.cfg.ExtraMounts)
+	}
+}
 
 func TestCompactCount(t *testing.T) {
 	cases := map[int64]string{
