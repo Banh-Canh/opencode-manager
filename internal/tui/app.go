@@ -518,6 +518,27 @@ func newModel(cfg config.Config) model {
 	}
 }
 
+// reloadLifecycleConfig picks up edits to the global config before an operation
+// that may replace a container. Container specs include global settings such as
+// extraMounts, so retaining the startup snapshot would otherwise hide changes.
+func (m model) reloadLifecycleConfig() (model, error) {
+	cfg, err := config.Load("")
+	if err != nil {
+		return m, err
+	}
+	lifecycle, err := workspace.NewLifecycle(cfg)
+	if err != nil {
+		return m, err
+	}
+	m.cfg = cfg
+	m.registry = workspace.NewRegistry(cfg)
+	m.templateRegistry = workspace.NewTemplateRegistry(cfg)
+	m.lifecycle = lifecycle
+	m.lifecycleErr = ""
+	m.compatibilityWarning = config.BaseImageCompatibilityWarning(appVersion, cfg.BaseImage.Name)
+	return m, nil
+}
+
 func (m model) Init() tea.Cmd {
 	return tea.Batch(m.loadWorkspaces, m.checkRuntime, m.ensureBaseImage, checkForUpdate, tickCmd(), baseSpinnerCmd())
 }
@@ -1477,6 +1498,17 @@ func (m model) toggleStartStop() (tea.Model, tea.Cmd) {
 		m.showError("Start/Stop Workspace", "Start/Stop failed: "+m.lifecycleErr)
 		return m, nil
 	}
+	for _, target := range targets {
+		if m.statuses[target.Manifest.Name].Container != runtime.StatusRunning {
+			var err error
+			m, err = m.reloadLifecycleConfig()
+			if err != nil {
+				m.showError("Start/Stop Workspace", "Start failed: "+err.Error())
+				return m, nil
+			}
+			break
+		}
+	}
 	cmds := make([]tea.Cmd, 0, len(targets))
 	for _, target := range targets {
 		if m.recreating[target.Manifest.Name] {
@@ -1513,6 +1545,12 @@ func (m model) startSelected() (tea.Model, tea.Cmd) {
 	}
 	if m.lifecycleErr != "" {
 		m.showError("Start Workspace", "Start failed: "+m.lifecycleErr)
+		return m, nil
+	}
+	var err error
+	m, err = m.reloadLifecycleConfig()
+	if err != nil {
+		m.showError("Start Workspace", "Start failed: "+err.Error())
 		return m, nil
 	}
 
@@ -1585,6 +1623,12 @@ func (m model) recreateSelected() (tea.Model, tea.Cmd) {
 	}
 	if m.lifecycleErr != "" {
 		m.showError("Recreate Container", "Recreate failed: "+m.lifecycleErr)
+		return m, nil
+	}
+	var err error
+	m, err = m.reloadLifecycleConfig()
+	if err != nil {
+		m.showError("Recreate Container", "Recreate failed: "+err.Error())
 		return m, nil
 	}
 
